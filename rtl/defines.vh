@@ -70,7 +70,7 @@
 `define SETMODE_AUTO_LUT_NO_DITHER         8'd6
 `define SETMODE_AUTO_LUT_BLUE_NOISE        8'd7
 
-//`define OUTPUT_16B
+`define OUTPUT_16B
 
 // Define this to enable operation by default after reset
 // Used for debugging purpose only

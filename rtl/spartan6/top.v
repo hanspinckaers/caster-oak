@@ -66,7 +66,7 @@ module top(
     output wire LED
     );
     
-    parameter COLORMODE = "MONO";
+    parameter COLORMODE = "RGBW";
     
     parameter SIMULATION = "FALSE";
     parameter CALIB_SOFT_IP = "TRUE";

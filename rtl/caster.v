@@ -502,17 +502,55 @@ module caster(
         assign by_y_pos = v_cnt_mod_3;
     end
     else if ((COLORMODE == "MONO") || (COLORMODE == "RGBW")) begin: gen_mono_counter
-        assign by_x_pos = scan_h_cnt[2:0];
+//        assign by_x_pos = scan_h_cnt[2:0];
         assign bn_x_pos = scan_h_cnt[3:0];
         assign bn_x_pos_sel = 2'b0;
-        assign by_y_pos = scan_v_cnt[2:0];
+//        assign by_y_pos = scan_v_cnt[2:0];
     end
     
     if ((COLORMODE == "DES") || (COLORMODE == "MONO")) begin: gen_mono_ypos
         assign bn_y_pos = scan_v_cnt[5:0];
     end
-    else if (COLORMODE == "RGBW") begin: gen_rgbw_ypos
+    else if (COLORMODE == "RGBW") begin: gen_rgbw_counter
         assign bn_y_pos = scan_v_cnt[6:1];
+		  
+		//OAK RGBW 3x3 Matrix Counter
+        reg [2:0] v_cnt_mod_3;
+        reg [2:0] h_cnt_mod_3;
+        // needed for bn dithering later counter for divisions
+        reg [3:0] h_cnt_div_3;
+        wire [2:0] v_cnt_mod_3_inc = (v_cnt_mod_3 == 2) ?
+                (0) : (v_cnt_mod_3 + 1);
+        wire [2:0] h_cnt_mod_3_inc = (h_cnt_mod_3 == 2) ?
+                (0) : (h_cnt_mod_3 + 1);
+        wire [2:0] h_cnt_div_3_inc = (h_cnt_mod_3 == 2) ?
+                (h_cnt_div_3 + 1) : (h_cnt_div_3);
+        always @(posedge clk)
+            if (rst) begin
+                v_cnt_mod_3 <= 0;
+                h_cnt_mod_3 <= 0;
+            end
+            else begin
+                if (scan_state == SCAN_RUNNING) begin
+                    if (scan_h_cnt == htotal - 1) begin
+                        h_cnt_mod_3 <= 0;
+                        h_cnt_div_3 <= 0;
+                        if (scan_v_cnt == vtotal - 1) begin
+                            v_cnt_mod_3 <= 0;
+                        end
+                        else begin
+                            v_cnt_mod_3 <= v_cnt_mod_3_inc;
+                        end
+                    end
+                    else begin
+                        h_cnt_mod_3 <= h_cnt_mod_3_inc;
+                        h_cnt_div_3 <= h_cnt_div_3_inc;
+                    end
+                end
+            end
+        assign by_x_pos = h_cnt_mod_3;
+        assign by_y_pos = v_cnt_mod_3;
+		  
     end
     endgenerate
 
