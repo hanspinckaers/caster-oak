@@ -202,6 +202,10 @@
       <association xil_pn:name="BehavioralSimulation" xil_pn:seqID="136"/>
       <association xil_pn:name="Implementation" xil_pn:seqID="28"/>
     </file>
+    <file xil_pn:name="../r2_dithering.v" xil_pn:type="FILE_VERILOG">
+      <association xil_pn:name="BehavioralSimulation" xil_pn:seqID="138"/>
+      <association xil_pn:name="Implementation" xil_pn:seqID="29"/>
+    </file>
     <file xil_pn:name="../blue_noise_dithering.v" xil_pn:type="FILE_VERILOG">
       <association xil_pn:name="BehavioralSimulation" xil_pn:seqID="137"/>
       <association xil_pn:name="Implementation" xil_pn:seqID="27"/>

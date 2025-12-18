@@ -626,6 +626,19 @@ module caster(
         .y_pos(by_y_pos)
     );
 
+    // R2 Low Discrepancy Grid dithering - better spatial distribution than Bayer
+    wire [3:0] s3_pixel_r2_dithered;
+    r2_dithering #(
+        .OUTPUT_BITS(1),
+        .COLORMODE(COLORMODE)
+    ) r2_dithering_1b (
+        .clk(clk),
+        .vin(s2_pixel_linear),
+        .vout(s3_pixel_r2_dithered),
+        .x_pos(scan_h_cnt),
+        .y_pos(scan_v_cnt)
+    );
+
     // Move to next stage
     reg [63:0] s3_bi_pixel;
     reg [15:0] s3_vin_pixel;
@@ -708,6 +721,7 @@ module caster(
     reg [3:0] s4_pixel_bayer_dithered;
     reg [3:0] s4_pixel_bn1b_dithered;
     reg [15:0] s4_pixel_bn4b_dithered;
+    reg [3:0] s4_pixel_r2_dithered;
     reg [3:0] s4_op_valid;
     
     always @(posedge clk) begin
@@ -717,6 +731,7 @@ module caster(
         s4_pixel_bayer_dithered <= s3_pixel_bayer_dithered;
         s4_pixel_bn1b_dithered <= s3_pixel_bn1b_dithered;
         s4_pixel_bn4b_dithered <= s3_pixel_bn4b_dithered;
+        s4_pixel_r2_dithered <= s3_pixel_r2_dithered;
         s4_op_valid <= s3_op_valid;
     end
 
@@ -734,6 +749,7 @@ module caster(
             wire proc_p_bd = s4_pixel_bayer_dithered[i];
             wire proc_p_n1 = s4_pixel_bn1b_dithered[i];
             wire [3:0] proc_p_n4 = s4_pixel_bn4b_dithered[i*4+:4];
+            wire proc_p_r2 = s4_pixel_r2_dithered[i];
             wire [15:0] proc_bi = s4_bi_pixel[i*16+:16];
             wire [15:0] proc_bo;
             wire [1:0] proc_lut_rd = s4_lut_rd[i*2+:2];
@@ -746,6 +762,7 @@ module caster(
                 .proc_p_bd(proc_p_bd),
                 .proc_p_n1(proc_p_n1),
                 .proc_p_n4(proc_p_n4),
+                .proc_p_r2(proc_p_r2),
                 .proc_bi(proc_bi),
                 .proc_bo(proc_bo),
                 .proc_lut_rd(proc_lut_rd),

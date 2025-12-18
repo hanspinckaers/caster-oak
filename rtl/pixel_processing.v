@@ -20,6 +20,7 @@ module pixel_processing(
     input  wire        proc_p_bd,   // Bayer dithered pixel to 1-bit
     input  wire        proc_p_n1,   // Blue noise dithered pixel to 1-bit
     input  wire [3:0]  proc_p_n4,   // Blue noise dithered pixel to 4-bit
+    input  wire        proc_p_r2,   // R2 LDG dithered pixel to 1-bit
     input  wire [15:0] proc_bi,     // Pixel state input from VRAM
     output reg  [15:0] proc_bo,     // Pixel state output to VRAM
     input  wire [1:0]  proc_lut_rd, // Read out from LUT
@@ -43,6 +44,7 @@ module pixel_processing(
     localparam MODE_FAST_GREY = 4'd11; // 1011
     localparam MODE_AUTO_LUT_NO_DITHER = 4'd12; // 1100
     localparam MODE_AUTO_LUT_BLUE_NOISE = 4'd13; // 1101
+    localparam MODE_FAST_MONO_R2 = 4'd14; // 1110 - R2 LDG dithering
 
     //localparam FASTM_B2W_FRAMES = 6'd4;
     //localparam FASTM_W2B_FRAMES = 6'd4;
@@ -173,6 +175,7 @@ module pixel_processing(
     localparam DITHER_BAYER = 3'b001;
     localparam DITHER_BN_1BIT = 3'b010;
     localparam DITHER_BN_4BIT = 3'b011;
+    localparam DITHER_R2 = 3'b100;
 
     // EX op decoding sorta
     wire manual_lut_update_en = op_valid && (op_cmd == `OP_EXT_REDRAW);
@@ -219,6 +222,10 @@ module pixel_processing(
                 pixel_basemode = BASEMODE_AUTO_LUT;
                 pixel_dither = DITHER_BN_4BIT;
             end
+            MODE_FAST_MONO_R2: begin
+                pixel_basemode = BASEMODE_FAST_MONO;
+                pixel_dither = DITHER_R2;
+            end
             default: begin
                 // Fallback, todo: report this as an error
                 pixel_basemode = BASEMODE_FAST_MONO;
@@ -250,7 +257,8 @@ module pixel_processing(
         (pixel_dither == DITHER_NONE) ? (proc_p_or) :
         (pixel_dither == DITHER_BAYER) ? ({4{proc_p_bd}}) :
         (pixel_dither == DITHER_BN_1BIT) ? ({4{proc_p_n1}}) :
-        (pixel_dither == DITHER_BN_4BIT) ? (proc_p_n4) : {4'd0};
+        (pixel_dither == DITHER_BN_4BIT) ? (proc_p_n4) :
+        (pixel_dither == DITHER_R2) ? ({4{proc_p_r2}}) : {4'd0};
 
     wire [3:0] proc_vinnd = force_clear ? clear_color : proc_p_li[7:4];
 
@@ -513,6 +521,8 @@ module pixel_processing(
                 proc_bo = `INIT_AUTO_LUT_ND;
             `SETMODE_AUTO_LUT_BLUE_NOISE:
                 proc_bo = `INIT_AUTO_LUT_OD;
+            `SETMODE_FAST_MONO_R2:
+                proc_bo = `INIT_FAST_MONO_R2;
             default: begin
                 // Invalid input detected, default back to manual lut
                 proc_bo = {MODE_MANUAL_LUT_NO_DITHER, 4'd0, 6'd0, 4'd15};

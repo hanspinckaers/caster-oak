@@ -69,6 +69,7 @@
 `define SETMODE_FAST_GREY                  8'd5
 `define SETMODE_AUTO_LUT_NO_DITHER         8'd6
 `define SETMODE_AUTO_LUT_BLUE_NOISE        8'd7
+`define SETMODE_FAST_MONO_R2               8'd8
 
 `define OUTPUT_16B
 
@@ -178,6 +179,7 @@
 `define INIT_FAST_MONO_BD   {MODE_FAST_MONO_BAYER, 2'b0, 6'd0, 3'd0, 1'b1}
 `define INIT_FAST_MONO_BN   {MODE_FAST_MONO_BLUE_NOISE, 2'b0, 6'd0, 3'd0, 1'b1}
 `define INIT_FAST_MONO_ND   {MODE_FAST_MONO_NO_DITHER, 2'b0, 6'd0, 3'd0, 1'b1}
+`define INIT_FAST_MONO_R2   {MODE_FAST_MONO_R2, 2'b0, 6'd0, 3'd0, 1'b1}
 `define INIT_FAST_GREY      {MODE_FAST_GREY, STAGE_DONE, 6'd0, 2'd0, 2'b11}
 
 `define DEFAULT_MODE        `INIT_FAST_MONO_BD
