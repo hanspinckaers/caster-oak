@@ -19,7 +19,7 @@
 
 module bayer_dithering #(
     parameter COLORMODE = "RGBW",
-    parameter LINE_WIDTH = 2200  // Max pixels per line (for line buffer)
+    parameter LINE_WIDTH_MAX = 2200  // Max pixels per line (compile-time buffer sizing)
 ) (
     input wire        clk,
     input wire        rst,
@@ -29,6 +29,8 @@ module bayer_dithering #(
     input wire [10:0] y_cnt,      // Full y counter for line change detection
     input wire [2:0]  x_pos,      // X position for Bayer matrix (mod 8)
     input wire [2:0]  y_pos       // Y position for Bayer matrix (mod 8)
+    // Note: Actual line width is determined by x_cnt timing from caster (hact from CSR)
+    // LINE_WIDTH_MAX just sizes the buffer for the maximum expected width
 );
 
     // ISE-compatible clog2 function
@@ -181,7 +183,7 @@ module bayer_dithering #(
     // Line buffer: stores 1-bit per pixel (is_white) for previous line
     // For 4 pixels per clock, we store 4 bits per address
     // Using distributed RAM for combinational read (no latency)
-    localparam LINE_BUF_DEPTH = (LINE_WIDTH + 3) / 4;  // Round up
+    localparam LINE_BUF_DEPTH = (LINE_WIDTH_MAX + 3) / 4;  // Round up
     localparam LINE_BUF_AW = clog2(LINE_BUF_DEPTH);
     
     (* ram_style = "distributed" *)
