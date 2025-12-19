@@ -616,9 +616,9 @@ module caster(
         .y_pos(bn_y_pos)
     );
 
-    bayer_dithering_v2 #(
+    bayer_dithering #(
         .COLORMODE(COLORMODE),
-        .LINE_WIDTH(1100)  // Max pixels per line for edge detection buffer
+        .LINE_WIDTH(2200)  // Max pixels per line for edge detection buffer
     ) bayer_dithering (
         .clk(clk),
         .rst(rst),
