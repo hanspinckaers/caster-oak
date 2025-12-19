@@ -10,7 +10,7 @@
 //
 // bayer_dithering.v
 // Improved Bayer dithering with:
-// 1. Phase-scrambling to break visible grid pattern
+// 1. Original 3x3 Bayer matrix (no phase scrambling)
 // 2. Edge-aware bypass for sharp text/lines (horizontal + vertical)
 //
 // 1 cycle latency (same as original)
@@ -45,83 +45,71 @@ module bayer_dithering #(
     endfunction
 
     // =========================================================================
-    // Phase Scrambling: Shift X index based on Y position
-    // This breaks vertical alignment of dither pattern
-    // =========================================================================
-    
-    // Shift pattern every 4 rows using higher Y bits
-    wire [1:0] phase_shift = y_cnt[3:2];
-    wire [1:0] x_scrambled = x_pos[1:0] + phase_shift;
-
-    // =========================================================================
-    // Bayer Matrix Lookup (with scrambled X index)
+    // Bayer Matrix Lookup (original 3x3 matrix, no phase scrambling)
     // =========================================================================
     
     wire [3:0] b0, b1, b2, b3;
 
     generate
     if (COLORMODE == "MONO") begin: gen_mono_dither
-        // MONO mode uses y_pos[1:0] only, no x dependency in original
-        // Add phase scrambling to break pattern
-        wire [1:0] y_idx = y_pos[1:0] + phase_shift;
+        // MONO mode uses y_pos[1:0] only, no x dependency
         assign b0 =
-            (y_idx == 2'b00) ? (-4'd8) :
-            (y_idx == 2'b01) ? (4'd4) :
-            (y_idx == 2'b10) ? (-4'd5) :
-                               (4'd7);
+            (y_pos[1:0] == 2'b00) ? (-4'd8) :
+            (y_pos[1:0] == 2'b01) ? (4'd4) :
+            (y_pos[1:0] == 2'b10) ? (-4'd5) :
+                                    (4'd7);
         assign b1 =
-            (y_idx == 2'b00) ? (4'd0) :
-            (y_idx == 2'b01) ? (-4'd4) :
-            (y_idx == 2'b10) ? (4'd3) :
-                               (-4'd1);
+            (y_pos[1:0] == 2'b00) ? (4'd0) :
+            (y_pos[1:0] == 2'b01) ? (-4'd4) :
+            (y_pos[1:0] == 2'b10) ? (4'd3) :
+                                    (-4'd1);
         assign b2 =
-            (y_idx == 2'b00) ? (-4'd6) :
-            (y_idx == 2'b01) ? (4'd6) :
-            (y_idx == 2'b10) ? (-4'd7) :
-                               (4'd5);
+            (y_pos[1:0] == 2'b00) ? (-4'd6) :
+            (y_pos[1:0] == 2'b01) ? (4'd6) :
+            (y_pos[1:0] == 2'b10) ? (-4'd7) :
+                                    (4'd5);
         assign b3 =
-            (y_idx == 2'b00) ? (4'd2) :
-            (y_idx == 2'b01) ? (-4'd2) :
-            (y_idx == 2'b10) ? (4'd1) :
-                               (-4'd3);
+            (y_pos[1:0] == 2'b00) ? (4'd2) :
+            (y_pos[1:0] == 2'b01) ? (-4'd2) :
+            (y_pos[1:0] == 2'b10) ? (4'd1) :
+                                    (-4'd3);
     end
     else if (COLORMODE == "DES") begin: gen_des_dither
         assign b0 =
-            (y_pos[2:0] == 3'd0) ? ((x_scrambled == 2'd0) ? (-4'd7) : (x_scrambled == 2'd1) ? ( 4'd7) : ( 4'd0)) :
-            (y_pos[2:0] == 3'd1) ? ((x_scrambled == 2'd0) ? (-4'd7) : (x_scrambled == 2'd1) ? ( 4'd0) : ( 4'd0)) :
-                                   ((x_scrambled == 2'd0) ? (-4'd7) : (x_scrambled == 2'd1) ? ( 4'd7) : ( 4'd7));
+            (y_pos[2:0] == 3'd0) ? ((x_pos[1:0] == 2'd0) ? (-4'd7) : (x_pos[1:0] == 2'd1) ? ( 4'd7) : ( 4'd0)) :
+            (y_pos[2:0] == 3'd1) ? ((x_pos[1:0] == 2'd0) ? (-4'd7) : (x_pos[1:0] == 2'd1) ? ( 4'd0) : ( 4'd0)) :
+                                   ((x_pos[1:0] == 2'd0) ? (-4'd7) : (x_pos[1:0] == 2'd1) ? ( 4'd7) : ( 4'd7));
         assign b1 =
-            (y_pos[2:0] == 3'd0) ? ((x_scrambled == 2'd0) ? ( 4'd7) : (x_scrambled == 2'd1) ? ( 4'd0) : (-4'd7)) :
-            (y_pos[2:0] == 3'd1) ? ((x_scrambled == 2'd0) ? ( 4'd0) : (x_scrambled == 2'd1) ? ( 4'd0) : (-4'd7)) :
-                                   ((x_scrambled == 2'd0) ? ( 4'd7) : (x_scrambled == 2'd1) ? ( 4'd7) : (-4'd7));
+            (y_pos[2:0] == 3'd0) ? ((x_pos[1:0] == 2'd0) ? ( 4'd7) : (x_pos[1:0] == 2'd1) ? ( 4'd0) : (-4'd7)) :
+            (y_pos[2:0] == 3'd1) ? ((x_pos[1:0] == 2'd0) ? ( 4'd0) : (x_pos[1:0] == 2'd1) ? ( 4'd0) : (-4'd7)) :
+                                   ((x_pos[1:0] == 2'd0) ? ( 4'd7) : (x_pos[1:0] == 2'd1) ? ( 4'd7) : (-4'd7));
         assign b2 =
-            (y_pos[2:0] == 3'd0) ? ((x_scrambled == 2'd0) ? ( 4'd0) : (x_scrambled == 2'd1) ? (-4'd7) : ( 4'd7)) :
-            (y_pos[2:0] == 3'd1) ? ((x_scrambled == 2'd0) ? ( 4'd0) : (x_scrambled == 2'd1) ? (-4'd7) : ( 4'd0)) :
-                                   ((x_scrambled == 2'd0) ? ( 4'd7) : (x_scrambled == 2'd1) ? (-4'd7) : ( 4'd7));
+            (y_pos[2:0] == 3'd0) ? ((x_pos[1:0] == 2'd0) ? ( 4'd0) : (x_pos[1:0] == 2'd1) ? (-4'd7) : ( 4'd7)) :
+            (y_pos[2:0] == 3'd1) ? ((x_pos[1:0] == 2'd0) ? ( 4'd0) : (x_pos[1:0] == 2'd1) ? (-4'd7) : ( 4'd0)) :
+                                   ((x_pos[1:0] == 2'd0) ? ( 4'd7) : (x_pos[1:0] == 2'd1) ? (-4'd7) : ( 4'd7));
         assign b3 =
-            (y_pos[2:0] == 3'd0) ? ((x_scrambled == 2'd0) ? (-4'd7) : (x_scrambled == 2'd1) ? ( 4'd7) : ( 4'd0)) :
-            (y_pos[2:0] == 3'd1) ? ((x_scrambled == 2'd0) ? (-4'd7) : (x_scrambled == 2'd1) ? ( 4'd0) : ( 4'd0)) :
-                                   ((x_scrambled == 2'd0) ? (-4'd7) : (x_scrambled == 2'd1) ? ( 4'd7) : ( 4'd7));
+            (y_pos[2:0] == 3'd0) ? ((x_pos[1:0] == 2'd0) ? (-4'd7) : (x_pos[1:0] == 2'd1) ? ( 4'd7) : ( 4'd0)) :
+            (y_pos[2:0] == 3'd1) ? ((x_pos[1:0] == 2'd0) ? (-4'd7) : (x_pos[1:0] == 2'd1) ? ( 4'd0) : ( 4'd0)) :
+                                   ((x_pos[1:0] == 2'd0) ? (-4'd7) : (x_pos[1:0] == 2'd1) ? ( 4'd7) : ( 4'd7));
     end
     else if (COLORMODE == "RGBW") begin: gen_rgbw_dither
-        // OAK 3x3 Matrix with phase scrambling
-        // Original 3x3 values preserved - x_scrambled >= 2 uses same value (else case)
+        // OAK 3x3 Matrix - original values without phase scrambling
         assign b0 =
-            (y_pos[2:0] == 3'd0) ? ((x_scrambled == 2'd0) ? (-4'd7) : (x_scrambled == 2'd1) ? ( 4'd0) : ( 4'd3)) :
-            (y_pos[2:0] == 3'd1) ? ((x_scrambled == 2'd0) ? ( 4'd5) : (x_scrambled == 2'd1) ? (-4'd6) : ( 4'd6)) :
-                                   ((x_scrambled == 2'd0) ? ( 4'd7) : (x_scrambled == 2'd1) ? (-4'd5) : (-4'd3));
+            (y_pos[2:0] == 3'd0) ? ((x_pos[1:0] == 2'd0) ? (-4'd7) : (x_pos[1:0] == 2'd1) ? ( 4'd0) : ( 4'd3)) :
+            (y_pos[2:0] == 3'd1) ? ((x_pos[1:0] == 2'd0) ? ( 4'd5) : (x_pos[1:0] == 2'd1) ? (-4'd6) : ( 4'd6)) :
+                                   ((x_pos[1:0] == 2'd0) ? ( 4'd7) : (x_pos[1:0] == 2'd1) ? (-4'd5) : (-4'd3));
         assign b1 =
-            (y_pos[2:0] == 3'd0) ? ((x_scrambled == 2'd0) ? ( 4'd0) : (x_scrambled == 2'd1) ? ( 4'd3) : (-4'd7)) :
-            (y_pos[2:0] == 3'd1) ? ((x_scrambled == 2'd0) ? (-4'd6) : (x_scrambled == 2'd1) ? ( 4'd6) : ( 4'd5)) :
-                                   ((x_scrambled == 2'd0) ? (-4'd5) : (x_scrambled == 2'd1) ? (-4'd3) : ( 4'd7));
+            (y_pos[2:0] == 3'd0) ? ((x_pos[1:0] == 2'd0) ? ( 4'd0) : (x_pos[1:0] == 2'd1) ? ( 4'd3) : (-4'd7)) :
+            (y_pos[2:0] == 3'd1) ? ((x_pos[1:0] == 2'd0) ? (-4'd6) : (x_pos[1:0] == 2'd1) ? ( 4'd6) : ( 4'd5)) :
+                                   ((x_pos[1:0] == 2'd0) ? (-4'd5) : (x_pos[1:0] == 2'd1) ? (-4'd3) : ( 4'd7));
         assign b2 =
-            (y_pos[2:0] == 3'd0) ? ((x_scrambled == 2'd0) ? ( 4'd3) : (x_scrambled == 2'd1) ? (-4'd7) : ( 4'd0)) :
-            (y_pos[2:0] == 3'd1) ? ((x_scrambled == 2'd0) ? ( 4'd6) : (x_scrambled == 2'd1) ? ( 4'd5) : (-4'd6)) :
-                                   ((x_scrambled == 2'd0) ? (-4'd3) : (x_scrambled == 2'd1) ? ( 4'd7) : (-4'd5));
+            (y_pos[2:0] == 3'd0) ? ((x_pos[1:0] == 2'd0) ? ( 4'd3) : (x_pos[1:0] == 2'd1) ? (-4'd7) : ( 4'd0)) :
+            (y_pos[2:0] == 3'd1) ? ((x_pos[1:0] == 2'd0) ? ( 4'd6) : (x_pos[1:0] == 2'd1) ? ( 4'd5) : (-4'd6)) :
+                                   ((x_pos[1:0] == 2'd0) ? (-4'd3) : (x_pos[1:0] == 2'd1) ? ( 4'd7) : (-4'd5));
         assign b3 =
-            (y_pos[2:0] == 3'd0) ? ((x_scrambled == 2'd0) ? (-4'd7) : (x_scrambled == 2'd1) ? ( 4'd0) : ( 4'd3)) :
-            (y_pos[2:0] == 3'd1) ? ((x_scrambled == 2'd0) ? ( 4'd5) : (x_scrambled == 2'd1) ? (-4'd6) : ( 4'd6)) :
-                                   ((x_scrambled == 2'd0) ? ( 4'd7) : (x_scrambled == 2'd1) ? (-4'd5) : (-4'd3));
+            (y_pos[2:0] == 3'd0) ? ((x_pos[1:0] == 2'd0) ? (-4'd7) : (x_pos[1:0] == 2'd1) ? ( 4'd0) : ( 4'd3)) :
+            (y_pos[2:0] == 3'd1) ? ((x_pos[1:0] == 2'd0) ? ( 4'd5) : (x_pos[1:0] == 2'd1) ? (-4'd6) : ( 4'd6)) :
+                                   ((x_pos[1:0] == 2'd0) ? ( 4'd7) : (x_pos[1:0] == 2'd1) ? (-4'd5) : (-4'd3));
     end
     endgenerate
 
