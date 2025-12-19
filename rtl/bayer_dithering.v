@@ -103,26 +103,23 @@ module bayer_dithering #(
     end
     else if (COLORMODE == "RGBW") begin: gen_rgbw_dither
         // OAK 3x3 Matrix with phase scrambling
+        // Original 3x3 values preserved - x_scrambled >= 2 uses same value (else case)
         assign b0 =
-            (y_pos[2:0] == 3'd0) ? ((x_scrambled == 2'd0) ? (-4'd7) : (x_scrambled == 2'd1) ? ( 4'd0) : (x_scrambled == 2'd2) ? ( 4'd3) : (-4'd4)) :
-            (y_pos[2:0] == 3'd1) ? ((x_scrambled == 2'd0) ? ( 4'd5) : (x_scrambled == 2'd1) ? (-4'd6) : (x_scrambled == 2'd2) ? ( 4'd6) : ( 4'd2)) :
-            (y_pos[2:0] == 3'd2) ? ((x_scrambled == 2'd0) ? ( 4'd7) : (x_scrambled == 2'd1) ? (-4'd5) : (x_scrambled == 2'd2) ? (-4'd3) : ( 4'd1)) :
-                                   ((x_scrambled == 2'd0) ? (-4'd2) : (x_scrambled == 2'd1) ? ( 4'd4) : (x_scrambled == 2'd2) ? (-4'd8) : ( 4'd3));
+            (y_pos[2:0] == 3'd0) ? ((x_scrambled == 2'd0) ? (-4'd7) : (x_scrambled == 2'd1) ? ( 4'd0) : ( 4'd3)) :
+            (y_pos[2:0] == 3'd1) ? ((x_scrambled == 2'd0) ? ( 4'd5) : (x_scrambled == 2'd1) ? (-4'd6) : ( 4'd6)) :
+                                   ((x_scrambled == 2'd0) ? ( 4'd7) : (x_scrambled == 2'd1) ? (-4'd5) : (-4'd3));
         assign b1 =
-            (y_pos[2:0] == 3'd0) ? ((x_scrambled == 2'd0) ? ( 4'd0) : (x_scrambled == 2'd1) ? ( 4'd3) : (x_scrambled == 2'd2) ? (-4'd7) : ( 4'd5)) :
-            (y_pos[2:0] == 3'd1) ? ((x_scrambled == 2'd0) ? (-4'd6) : (x_scrambled == 2'd1) ? ( 4'd6) : (x_scrambled == 2'd2) ? ( 4'd5) : (-4'd3)) :
-            (y_pos[2:0] == 3'd2) ? ((x_scrambled == 2'd0) ? (-4'd5) : (x_scrambled == 2'd1) ? (-4'd3) : (x_scrambled == 2'd2) ? ( 4'd7) : ( 4'd0)) :
-                                   ((x_scrambled == 2'd0) ? ( 4'd4) : (x_scrambled == 2'd1) ? (-4'd8) : (x_scrambled == 2'd2) ? (-4'd2) : ( 4'd6));
+            (y_pos[2:0] == 3'd0) ? ((x_scrambled == 2'd0) ? ( 4'd0) : (x_scrambled == 2'd1) ? ( 4'd3) : (-4'd7)) :
+            (y_pos[2:0] == 3'd1) ? ((x_scrambled == 2'd0) ? (-4'd6) : (x_scrambled == 2'd1) ? ( 4'd6) : ( 4'd5)) :
+                                   ((x_scrambled == 2'd0) ? (-4'd5) : (x_scrambled == 2'd1) ? (-4'd3) : ( 4'd7));
         assign b2 =
-            (y_pos[2:0] == 3'd0) ? ((x_scrambled == 2'd0) ? ( 4'd3) : (x_scrambled == 2'd1) ? (-4'd7) : (x_scrambled == 2'd2) ? ( 4'd0) : (-4'd5)) :
-            (y_pos[2:0] == 3'd1) ? ((x_scrambled == 2'd0) ? ( 4'd6) : (x_scrambled == 2'd1) ? ( 4'd5) : (x_scrambled == 2'd2) ? (-4'd6) : ( 4'd2)) :
-            (y_pos[2:0] == 3'd2) ? ((x_scrambled == 2'd0) ? (-4'd3) : (x_scrambled == 2'd1) ? ( 4'd7) : (x_scrambled == 2'd2) ? (-4'd5) : ( 4'd4)) :
-                                   ((x_scrambled == 2'd0) ? (-4'd8) : (x_scrambled == 2'd1) ? (-4'd2) : (x_scrambled == 2'd2) ? ( 4'd4) : (-4'd1));
+            (y_pos[2:0] == 3'd0) ? ((x_scrambled == 2'd0) ? ( 4'd3) : (x_scrambled == 2'd1) ? (-4'd7) : ( 4'd0)) :
+            (y_pos[2:0] == 3'd1) ? ((x_scrambled == 2'd0) ? ( 4'd6) : (x_scrambled == 2'd1) ? ( 4'd5) : (-4'd6)) :
+                                   ((x_scrambled == 2'd0) ? (-4'd3) : (x_scrambled == 2'd1) ? ( 4'd7) : (-4'd5));
         assign b3 =
-            (y_pos[2:0] == 3'd0) ? ((x_scrambled == 2'd0) ? (-4'd7) : (x_scrambled == 2'd1) ? ( 4'd0) : (x_scrambled == 2'd2) ? ( 4'd3) : ( 4'd6)) :
-            (y_pos[2:0] == 3'd1) ? ((x_scrambled == 2'd0) ? ( 4'd5) : (x_scrambled == 2'd1) ? (-4'd6) : (x_scrambled == 2'd2) ? ( 4'd6) : (-4'd4)) :
-            (y_pos[2:0] == 3'd2) ? ((x_scrambled == 2'd0) ? ( 4'd7) : (x_scrambled == 2'd1) ? (-4'd5) : (x_scrambled == 2'd2) ? (-4'd3) : ( 4'd1)) :
-                                   ((x_scrambled == 2'd0) ? (-4'd2) : (x_scrambled == 2'd1) ? ( 4'd4) : (x_scrambled == 2'd2) ? (-4'd8) : ( 4'd2));
+            (y_pos[2:0] == 3'd0) ? ((x_scrambled == 2'd0) ? (-4'd7) : (x_scrambled == 2'd1) ? ( 4'd0) : ( 4'd3)) :
+            (y_pos[2:0] == 3'd1) ? ((x_scrambled == 2'd0) ? ( 4'd5) : (x_scrambled == 2'd1) ? (-4'd6) : ( 4'd6)) :
+                                   ((x_scrambled == 2'd0) ? ( 4'd7) : (x_scrambled == 2'd1) ? (-4'd5) : (-4'd3));
     end
     endgenerate
 
