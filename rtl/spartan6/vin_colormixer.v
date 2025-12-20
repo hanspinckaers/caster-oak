@@ -115,12 +115,14 @@ module vin_colormixer(
         //rgb2y rgb2y_even (.r(r_odd), .g(g_odd), .b(b_odd), .y(w_odd));
         assign y_odd[7:2] = (c_cnt_y == 1'b0) ? (r_odd) : (w_odd);
         assign y_even[7:2] = (c_cnt_y == 1'b0) ? (g_even) : (b_even);*/
-        // Mirrored color
-        wire [5:0] r_g_min = (r_even < g_even) ? r_even : g_even;
-        wire [5:0] r_g_b_min = (r_g_min < b_even) ? r_g_min : b_even;
-        wire [5:0] w_even = r_g_b_min;
-        assign y_odd[7:2] = (c_cnt_y == 1'b0) ? (g_odd) : (b_odd);
-        assign y_even[7:2] = (c_cnt_y == 1'b0) ? (r_even) : (w_even);
+        // Mac Mini Leo OED Config - BW/GR RGBW panel pattern
+        // Row 0: B (even), W (odd) -> BW
+        // Row 1: G (even), R (odd) -> GR
+        wire [5:0] r_g_min = (r_odd < g_odd) ? r_odd : g_odd;
+        wire [5:0] r_g_b_min = (r_g_min < b_odd) ? r_g_min : b_odd;
+        wire [5:0] w_odd = r_g_b_min;
+        assign y_odd[7:2] = (c_cnt_y == 1'b0) ? (w_odd) : (r_odd);
+        assign y_even[7:2] = (c_cnt_y == 1'b0) ? (b_even) : (g_even);
         assign y_odd[1:0] = y_odd[7:6];
         assign y_even[1:0] = y_even[7:6];
     end
