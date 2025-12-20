@@ -11,10 +11,11 @@
 // bayer_dithering.v
 // Improved Bayer dithering with:
 // 1. Original 3x3 Bayer matrix (no phase scrambling)
-// 2. Gradient magnitude edge detection (horizontal + vertical + diagonal)
-//    - Detects edges by actual pixel difference, not just binary threshold
-//    - Catches edges like 100->160 that binary detection misses
-//    - Diagonal detection for italic text and angled lines
+// 2. Gradient-weighted edge detection with soft blending
+//    - Instead of binary threshold, uses gradient magnitude for smooth blending
+//    - Eliminates stripe artifacts in images while preserving sharp text edges
+//    - Text (high gradient >160) gets full edge-aware treatment
+//    - Images (lower gradients) retain smooth dithering
 //
 // 1 cycle latency (same as original)
 `timescale 1ns / 1ps
@@ -23,7 +24,8 @@
 module bayer_dithering #(
     parameter COLORMODE = "RGBW",
     parameter LINE_WIDTH_MAX = 2200,  // Max pixels per line (compile-time buffer sizing)
-    parameter EDGE_THRESH = 64        // Gradient threshold for edge detection (0-255)
+    parameter EDGE_THRESH_LOW = 80,   // Below this: full dithering (smooth gradients)
+    parameter EDGE_THRESH_HIGH = 160  // Above this: full simple threshold (sharp text)
 ) (
     input wire        clk,
     input wire        rst,
@@ -149,7 +151,6 @@ module bayer_dithering #(
 
     // =========================================================================
     // Edge Detection - Horizontal (gradient magnitude)
-    // Detects edges by absolute pixel difference, not just binary threshold
     // =========================================================================
     
     reg [31:0] prev_vin;
@@ -157,122 +158,135 @@ module bayer_dithering #(
         prev_vin <= vin;
     end
     
-    // Previous pixel group
     wire [7:0] prev_pix3 = prev_vin[7:0];
     
-    // Calculate absolute differences for horizontal edges
     wire [7:0] h_diff_0 = (pix0 > prev_pix3) ? (pix0 - prev_pix3) : (prev_pix3 - pix0);
     wire [7:0] h_diff_1 = (pix1 > pix0) ? (pix1 - pix0) : (pix0 - pix1);
     wire [7:0] h_diff_2 = (pix2 > pix1) ? (pix2 - pix1) : (pix1 - pix2);
     wire [7:0] h_diff_3 = (pix3 > pix2) ? (pix3 - pix2) : (pix2 - pix3);
-    
-    // Horizontal edge: gradient exceeds threshold
-    wire h_edge_0 = (h_diff_0 >= EDGE_THRESH);
-    wire h_edge_1 = (h_diff_1 >= EDGE_THRESH);
-    wire h_edge_2 = (h_diff_2 >= EDGE_THRESH);
-    wire h_edge_3 = (h_diff_3 >= EDGE_THRESH);
 
     // =========================================================================
     // Edge Detection - Vertical (gradient magnitude)
-    // Uses full pixel value line buffer for gradient calculation
     // =========================================================================
     
-    // Line buffer: stores full 8-bit pixel values for previous line
-    // For 4 pixels per clock, we store 32 bits per address
-    localparam LINE_BUF_DEPTH = (LINE_WIDTH_MAX + 3) / 4;  // Round up
+    localparam LINE_BUF_DEPTH = (LINE_WIDTH_MAX + 3) / 4;
     localparam LINE_BUF_AW = clog2(LINE_BUF_DEPTH);
     
     (* ram_style = "distributed" *)
     reg [31:0] line_buffer [0:LINE_BUF_DEPTH-1];
     
-    wire [LINE_BUF_AW-1:0] line_buf_addr = x_cnt[10:2];  // Divide by 4
+    wire [LINE_BUF_AW-1:0] line_buf_addr = x_cnt[10:2];
     
-    // Combinational read from line buffer (distributed RAM)
     wire [31:0] prev_line_pixels = line_buffer[line_buf_addr];
     wire [7:0] prev_line_pix0 = prev_line_pixels[31:24];
     wire [7:0] prev_line_pix1 = prev_line_pixels[23:16];
     wire [7:0] prev_line_pix2 = prev_line_pixels[15:8];
     wire [7:0] prev_line_pix3 = prev_line_pixels[7:0];
     
-    // Write current line to buffer (registered)
     always @(posedge clk) begin
         line_buffer[line_buf_addr] <= vin;
     end
     
-    // Calculate absolute differences for vertical edges
     wire [7:0] v_diff_0 = (pix0 > prev_line_pix0) ? (pix0 - prev_line_pix0) : (prev_line_pix0 - pix0);
     wire [7:0] v_diff_1 = (pix1 > prev_line_pix1) ? (pix1 - prev_line_pix1) : (prev_line_pix1 - pix1);
     wire [7:0] v_diff_2 = (pix2 > prev_line_pix2) ? (pix2 - prev_line_pix2) : (prev_line_pix2 - pix2);
     wire [7:0] v_diff_3 = (pix3 > prev_line_pix3) ? (pix3 - prev_line_pix3) : (prev_line_pix3 - pix3);
-    
-    // Vertical edge: gradient exceeds threshold
-    wire v_edge_0 = (v_diff_0 >= EDGE_THRESH);
-    wire v_edge_1 = (v_diff_1 >= EDGE_THRESH);
-    wire v_edge_2 = (v_diff_2 >= EDGE_THRESH);
-    wire v_edge_3 = (v_diff_3 >= EDGE_THRESH);
 
     // =========================================================================
-    // Edge Detection - Diagonal (gradient magnitude)
-    // Upper-left (\) and upper-right (/) diagonals for italic text/angled lines
+    // Edge Detection - Diagonal
     // =========================================================================
     
-    // Store previous line buffer read for upper-left diagonal access
-    // This gives us access to the pixel group at x-4 on the previous line
     reg [31:0] prev_prev_line_pixels;
     always @(posedge clk) begin
         prev_prev_line_pixels <= prev_line_pixels;
     end
-    wire [7:0] prev_prev_line_pix3 = prev_prev_line_pixels[7:0];  // Rightmost pixel of previous group
+    wire [7:0] prev_prev_line_pix3 = prev_prev_line_pixels[7:0];
     
-    // Upper-left diagonal (\): current pixel vs prev_line at x-1
-    // pix0: compare with prev_prev_line_pix3 (previous group's rightmost)
-    // pix1: compare with prev_line_pix0
-    // pix2: compare with prev_line_pix1
-    // pix3: compare with prev_line_pix2
     wire [7:0] d_ul_diff_0 = (pix0 > prev_prev_line_pix3) ? (pix0 - prev_prev_line_pix3) : (prev_prev_line_pix3 - pix0);
     wire [7:0] d_ul_diff_1 = (pix1 > prev_line_pix0) ? (pix1 - prev_line_pix0) : (prev_line_pix0 - pix1);
     wire [7:0] d_ul_diff_2 = (pix2 > prev_line_pix1) ? (pix2 - prev_line_pix1) : (prev_line_pix1 - pix2);
     wire [7:0] d_ul_diff_3 = (pix3 > prev_line_pix2) ? (pix3 - prev_line_pix2) : (prev_line_pix2 - pix3);
     
-    wire d_ul_edge_0 = (d_ul_diff_0 >= EDGE_THRESH);
-    wire d_ul_edge_1 = (d_ul_diff_1 >= EDGE_THRESH);
-    wire d_ul_edge_2 = (d_ul_diff_2 >= EDGE_THRESH);
-    wire d_ul_edge_3 = (d_ul_diff_3 >= EDGE_THRESH);
-    
-    // Upper-right diagonal (/): current pixel vs prev_line at x+1
-    // pix0: compare with prev_line_pix1
-    // pix1: compare with prev_line_pix2
-    // pix2: compare with prev_line_pix3
-    // pix3: would need next group - skip (use vertical edge instead)
     wire [7:0] d_ur_diff_0 = (pix0 > prev_line_pix1) ? (pix0 - prev_line_pix1) : (prev_line_pix1 - pix0);
     wire [7:0] d_ur_diff_1 = (pix1 > prev_line_pix2) ? (pix1 - prev_line_pix2) : (prev_line_pix2 - pix1);
     wire [7:0] d_ur_diff_2 = (pix2 > prev_line_pix3) ? (pix2 - prev_line_pix3) : (prev_line_pix3 - pix2);
-    // pix3 upper-right not available without reading next address
-    
-    wire d_ur_edge_0 = (d_ur_diff_0 >= EDGE_THRESH);
-    wire d_ur_edge_1 = (d_ur_diff_1 >= EDGE_THRESH);
-    wire d_ur_edge_2 = (d_ur_diff_2 >= EDGE_THRESH);
-    // d_ur_edge_3 not computed - will rely on other edge detections
 
     // =========================================================================
-    // Combined Edge Detection (all combinational)
+    // Maximum Gradient Calculation (for soft blending)
+    // Find the maximum gradient across all directions for each pixel
     // =========================================================================
     
-    // Edge detected if any direction exceeds threshold
-    wire is_edge_0 = h_edge_0 || v_edge_0 || d_ul_edge_0 || d_ur_edge_0;
-    wire is_edge_1 = h_edge_1 || v_edge_1 || d_ul_edge_1 || d_ur_edge_1;
-    wire is_edge_2 = h_edge_2 || v_edge_2 || d_ul_edge_2 || d_ur_edge_2;
-    wire is_edge_3 = h_edge_3 || v_edge_3 || d_ul_edge_3;  // No d_ur_edge_3
+    // Helper function to find max of two 8-bit values
+    function [7:0] max2;
+        input [7:0] a, b;
+        begin
+            max2 = (a > b) ? a : b;
+        end
+    endfunction
+    
+    // Calculate max gradient for each pixel across all directions
+    wire [7:0] max_grad_0 = max2(max2(h_diff_0, v_diff_0), max2(d_ul_diff_0, d_ur_diff_0));
+    wire [7:0] max_grad_1 = max2(max2(h_diff_1, v_diff_1), max2(d_ul_diff_1, d_ur_diff_1));
+    wire [7:0] max_grad_2 = max2(max2(h_diff_2, v_diff_2), max2(d_ul_diff_2, d_ur_diff_2));
+    wire [7:0] max_grad_3 = max2(max2(h_diff_3, v_diff_3), d_ul_diff_3);  // No d_ur for pix3
 
     // =========================================================================
-    // Output MUX: Select dithered or simple based on edge
+    // Soft Edge Detection with Gradient-Weighted Blending
+    // 
+    // Instead of binary edge detection, we use 3 zones:
+    // - Below EDGE_THRESH_LOW: Full dithering (smooth image areas)
+    // - Above EDGE_THRESH_HIGH: Full simple threshold (sharp text edges)
+    // - Between: Probabilistic blend based on gradient strength
+    //
+    // For the transition zone, we use the Bayer matrix position as a
+    // spatial dither to decide between dithered and simple output.
+    // This creates a smooth visual transition without visible stripes.
+    // =========================================================================
+    
+    // Calculate blend threshold for transition zone
+    // When gradient is in transition zone, compare against spatially-varying threshold
+    // This uses existing Bayer offsets to create smooth spatial dithering of the blend
+    
+    // Normalize gradient to transition zone (0 = low thresh, 255 = high thresh)
+    // Then compare against position-dependent threshold
+    
+    localparam [7:0] THRESH_RANGE = EDGE_THRESH_HIGH - EDGE_THRESH_LOW;
+    
+    // For each pixel, determine if we should use simple output
+    // In transition zone: use spatial dithering based on x/y position
+    // This avoids coherent stripe artifacts
+    
+    // Spatial threshold varies based on position (using lower bits of coordinates)
+    // Creates 4x4 pattern for smooth blending
+    wire [3:0] spatial_phase = {y_pos[1:0], x_pos[1:0]};
+    
+    // Map spatial phase to threshold offset (0-15 maps to 0-THRESH_RANGE)
+    // This creates a Bayer-like pattern for the blend decision
+    wire [7:0] spatial_thresh_offset = (spatial_phase * THRESH_RANGE) >> 4;
+    wire [7:0] adaptive_thresh = EDGE_THRESH_LOW + spatial_thresh_offset;
+    
+    // Edge decision with soft blending:
+    // - Hard edge (simple) if gradient >= EDGE_THRESH_HIGH
+    // - Hard dither if gradient < EDGE_THRESH_LOW  
+    // - Spatially-dithered blend in between
+    wire use_simple_0 = (max_grad_0 >= EDGE_THRESH_HIGH) || 
+                        ((max_grad_0 >= EDGE_THRESH_LOW) && (max_grad_0 >= adaptive_thresh));
+    wire use_simple_1 = (max_grad_1 >= EDGE_THRESH_HIGH) || 
+                        ((max_grad_1 >= EDGE_THRESH_LOW) && (max_grad_1 >= adaptive_thresh));
+    wire use_simple_2 = (max_grad_2 >= EDGE_THRESH_HIGH) || 
+                        ((max_grad_2 >= EDGE_THRESH_LOW) && (max_grad_2 >= adaptive_thresh));
+    wire use_simple_3 = (max_grad_3 >= EDGE_THRESH_HIGH) || 
+                        ((max_grad_3 >= EDGE_THRESH_LOW) && (max_grad_3 >= adaptive_thresh));
+
+    // =========================================================================
+    // Output MUX: Select dithered or simple based on soft edge detection
     // =========================================================================
     
     wire [3:0] final_out;
-    assign final_out[3] = is_edge_0 ? simple_out[3] : bayer_out[3];
-    assign final_out[2] = is_edge_1 ? simple_out[2] : bayer_out[2];
-    assign final_out[1] = is_edge_2 ? simple_out[1] : bayer_out[1];
-    assign final_out[0] = is_edge_3 ? simple_out[0] : bayer_out[0];
+    assign final_out[3] = use_simple_0 ? simple_out[3] : bayer_out[3];
+    assign final_out[2] = use_simple_1 ? simple_out[2] : bayer_out[2];
+    assign final_out[1] = use_simple_2 ? simple_out[1] : bayer_out[1];
+    assign final_out[0] = use_simple_3 ? simple_out[0] : bayer_out[0];
 
     // Output register (1 cycle latency, same as original)
     always @(posedge clk) begin
