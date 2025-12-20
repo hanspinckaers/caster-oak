@@ -11,7 +11,9 @@
 // bayer_dithering.v
 // Improved Bayer dithering with:
 // 1. Original 3x3 Bayer matrix (no phase scrambling)
-// 2. Edge-aware bypass for sharp text/lines (horizontal + vertical)
+// 2. Gradient magnitude edge detection (horizontal + vertical)
+//    - Detects edges by actual pixel difference, not just binary threshold
+//    - Catches edges like 100->160 that binary detection misses
 //
 // 1 cycle latency (same as original)
 `timescale 1ns / 1ps
@@ -19,7 +21,8 @@
 
 module bayer_dithering #(
     parameter COLORMODE = "RGBW",
-    parameter LINE_WIDTH_MAX = 2200  // Max pixels per line (compile-time buffer sizing)
+    parameter LINE_WIDTH_MAX = 2200,  // Max pixels per line (compile-time buffer sizing)
+    parameter EDGE_THRESH = 64        // Gradient threshold for edge detection (0-255)
 ) (
     input wire        clk,
     input wire        rst,
@@ -144,7 +147,8 @@ module bayer_dithering #(
     wire [3:0] simple_out = {pix0[7], pix1[7], pix2[7], pix3[7]};
 
     // =========================================================================
-    // Edge Detection - Horizontal (compare with previous pixel group)
+    // Edge Detection - Horizontal (gradient magnitude)
+    // Detects edges by absolute pixel difference, not just binary threshold
     // =========================================================================
     
     reg [31:0] prev_vin;
@@ -152,52 +156,65 @@ module bayer_dithering #(
         prev_vin <= vin;
     end
     
-    // Binary representation: is pixel > 128?
-    wire [3:0] curr_binary = {pix0[7], pix1[7], pix2[7], pix3[7]};
-    wire [3:0] prev_binary = {prev_vin[31], prev_vin[23], prev_vin[15], prev_vin[7]};
+    // Previous pixel group
+    wire [7:0] prev_pix3 = prev_vin[7:0];
     
-    // Horizontal edge: compare current pixel 0 with previous pixel 3
-    // and detect transitions within current group
-    wire h_edge_0 = (curr_binary[3] != prev_binary[0]);  // pix0 vs prev_pix3
-    wire h_edge_1 = (curr_binary[2] != curr_binary[3]);  // pix1 vs pix0
-    wire h_edge_2 = (curr_binary[1] != curr_binary[2]);  // pix2 vs pix1
-    wire h_edge_3 = (curr_binary[0] != curr_binary[1]);  // pix3 vs pix2
+    // Calculate absolute differences for horizontal edges
+    wire [7:0] h_diff_0 = (pix0 > prev_pix3) ? (pix0 - prev_pix3) : (prev_pix3 - pix0);
+    wire [7:0] h_diff_1 = (pix1 > pix0) ? (pix1 - pix0) : (pix0 - pix1);
+    wire [7:0] h_diff_2 = (pix2 > pix1) ? (pix2 - pix1) : (pix1 - pix2);
+    wire [7:0] h_diff_3 = (pix3 > pix2) ? (pix3 - pix2) : (pix2 - pix3);
+    
+    // Horizontal edge: gradient exceeds threshold
+    wire h_edge_0 = (h_diff_0 >= EDGE_THRESH);
+    wire h_edge_1 = (h_diff_1 >= EDGE_THRESH);
+    wire h_edge_2 = (h_diff_2 >= EDGE_THRESH);
+    wire h_edge_3 = (h_diff_3 >= EDGE_THRESH);
 
     // =========================================================================
-    // Edge Detection - Vertical (compare with previous line)
-    // Uses binary line buffer (1 bit per pixel)
+    // Edge Detection - Vertical (gradient magnitude)
+    // Uses full pixel value line buffer for gradient calculation
     // =========================================================================
     
-    // Line buffer: stores 1-bit per pixel (is_white) for previous line
-    // For 4 pixels per clock, we store 4 bits per address
-    // Using distributed RAM for combinational read (no latency)
+    // Line buffer: stores full 8-bit pixel values for previous line
+    // For 4 pixels per clock, we store 32 bits per address
     localparam LINE_BUF_DEPTH = (LINE_WIDTH_MAX + 3) / 4;  // Round up
     localparam LINE_BUF_AW = clog2(LINE_BUF_DEPTH);
     
     (* ram_style = "distributed" *)
-    reg [3:0] line_buffer [0:LINE_BUF_DEPTH-1];
+    reg [31:0] line_buffer [0:LINE_BUF_DEPTH-1];
     
     wire [LINE_BUF_AW-1:0] line_buf_addr = x_cnt[10:2];  // Divide by 4
     
     // Combinational read from line buffer (distributed RAM)
-    wire [3:0] prev_line_binary = line_buffer[line_buf_addr];
+    wire [31:0] prev_line_pixels = line_buffer[line_buf_addr];
+    wire [7:0] prev_line_pix0 = prev_line_pixels[31:24];
+    wire [7:0] prev_line_pix1 = prev_line_pixels[23:16];
+    wire [7:0] prev_line_pix2 = prev_line_pixels[15:8];
+    wire [7:0] prev_line_pix3 = prev_line_pixels[7:0];
     
     // Write current line to buffer (registered)
     always @(posedge clk) begin
-        line_buffer[line_buf_addr] <= curr_binary;
+        line_buffer[line_buf_addr] <= vin;
     end
     
-    // Vertical edge detection (combinational, no delay needed with distributed RAM)
-    wire v_edge_0 = (curr_binary[3] != prev_line_binary[3]);
-    wire v_edge_1 = (curr_binary[2] != prev_line_binary[2]);
-    wire v_edge_2 = (curr_binary[1] != prev_line_binary[1]);
-    wire v_edge_3 = (curr_binary[0] != prev_line_binary[0]);
+    // Calculate absolute differences for vertical edges
+    wire [7:0] v_diff_0 = (pix0 > prev_line_pix0) ? (pix0 - prev_line_pix0) : (prev_line_pix0 - pix0);
+    wire [7:0] v_diff_1 = (pix1 > prev_line_pix1) ? (pix1 - prev_line_pix1) : (prev_line_pix1 - pix1);
+    wire [7:0] v_diff_2 = (pix2 > prev_line_pix2) ? (pix2 - prev_line_pix2) : (prev_line_pix2 - pix2);
+    wire [7:0] v_diff_3 = (pix3 > prev_line_pix3) ? (pix3 - prev_line_pix3) : (prev_line_pix3 - pix3);
+    
+    // Vertical edge: gradient exceeds threshold
+    wire v_edge_0 = (v_diff_0 >= EDGE_THRESH);
+    wire v_edge_1 = (v_diff_1 >= EDGE_THRESH);
+    wire v_edge_2 = (v_diff_2 >= EDGE_THRESH);
+    wire v_edge_3 = (v_diff_3 >= EDGE_THRESH);
 
     // =========================================================================
     // Combined Edge Detection (all combinational)
     // =========================================================================
     
-    // Edge detected if horizontal OR vertical edge
+    // Edge detected if horizontal OR vertical gradient exceeds threshold
     wire is_edge_0 = h_edge_0 || v_edge_0;
     wire is_edge_1 = h_edge_1 || v_edge_1;
     wire is_edge_2 = h_edge_2 || v_edge_2;
