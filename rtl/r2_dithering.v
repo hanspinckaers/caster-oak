@@ -14,6 +14,11 @@
 // 2. CFA-aware brightness bias for RGBW panels
 //    - W (White) subpixel biased toward white for better brightness
 //    - Accounts for BW/GR 2x2 CFA layout
+// 3. Gradient-weighted edge detection with soft blending
+//    - Instead of binary threshold, uses gradient magnitude for smooth blending
+//    - Eliminates stripe artifacts in images while preserving sharp text edges
+//    - Text (high gradient >160) gets full edge-aware treatment
+//    - Images (lower gradients) retain smooth dithering
 //
 // Based on: https://blog.demofox.org/2022/02/01/two-low-discrepancy-grids/
 //
@@ -23,14 +28,30 @@
 
 module r2_dithering #(
     parameter OUTPUT_BITS = 1,      // 1 or 4
-    parameter COLORMODE = "RGBW"
+    parameter COLORMODE = "RGBW",
+    parameter LINE_WIDTH_MAX = 2200,  // Max pixels per line (compile-time buffer sizing)
+    parameter EDGE_THRESH_LOW = 80,   // Below this: full dithering (smooth gradients)
+    parameter EDGE_THRESH_HIGH = 160  // Above this: full simple threshold (sharp text)
 ) (
     input wire                      clk,
+    input wire                      rst,
     input wire [31:0]               vin,        // 4 pixels x 8 bits
     output reg [OUTPUT_BITS*4-1:0]  vout,
+    input wire [10:0]               x_cnt,      // Full x counter for line buffer addressing
     input wire [10:0]               x_pos,      // Pixel x position
     input wire [10:0]               y_pos       // Pixel y position
 );
+
+    // ISE-compatible clog2 function
+    function integer clog2;
+        input integer value;
+        integer i;
+        begin
+            clog2 = 0;
+            for (i = value - 1; i > 0; i = i >> 1)
+                clog2 = clog2 + 1;
+        end
+    endfunction
 
     // =========================================================================
     // High-precision R2 constants (16-bit fixed point, 0.16 format)
@@ -177,17 +198,170 @@ module r2_dithering #(
     wire [7:0] sat2 = (sum2[9]) ? 8'd0 : (sum2[8]) ? 8'd255 : sum2[8:1];
     wire [7:0] sat3 = (sum3[9]) ? 8'd0 : (sum3[8]) ? 8'd255 : sum3[8:1];
 
-    // Output: take top OUTPUT_BITS from each pixel
-    wire [OUTPUT_BITS*4-1:0] dithered = {
+    // R2 dithered output: take top OUTPUT_BITS from each pixel
+    wire [OUTPUT_BITS*4-1:0] r2_out = {
         sat0[7-:OUTPUT_BITS],
         sat1[7-:OUTPUT_BITS],
         sat2[7-:OUTPUT_BITS],
         sat3[7-:OUTPUT_BITS]
     };
 
+    // =========================================================================
+    // Simple Threshold Path (for edges - no dithering)
+    // =========================================================================
+    
+    wire [OUTPUT_BITS*4-1:0] simple_out = {
+        pix0[7-:OUTPUT_BITS],
+        pix1[7-:OUTPUT_BITS],
+        pix2[7-:OUTPUT_BITS],
+        pix3[7-:OUTPUT_BITS]
+    };
+
+    // =========================================================================
+    // Edge Detection - Horizontal (gradient magnitude)
+    // =========================================================================
+    
+    reg [31:0] prev_vin;
+    always @(posedge clk) begin
+        prev_vin <= vin;
+    end
+    
+    wire [7:0] prev_pix3 = prev_vin[7:0];
+    
+    wire [7:0] h_diff_0 = (pix0 > prev_pix3) ? (pix0 - prev_pix3) : (prev_pix3 - pix0);
+    wire [7:0] h_diff_1 = (pix1 > pix0) ? (pix1 - pix0) : (pix0 - pix1);
+    wire [7:0] h_diff_2 = (pix2 > pix1) ? (pix2 - pix1) : (pix1 - pix2);
+    wire [7:0] h_diff_3 = (pix3 > pix2) ? (pix3 - pix2) : (pix2 - pix3);
+
+    // =========================================================================
+    // Edge Detection - Vertical (gradient magnitude)
+    // =========================================================================
+    
+    localparam LINE_BUF_DEPTH = (LINE_WIDTH_MAX + 3) / 4;
+    localparam LINE_BUF_AW = clog2(LINE_BUF_DEPTH);
+    
+    (* ram_style = "distributed" *)
+    reg [31:0] line_buffer [0:LINE_BUF_DEPTH-1];
+    
+    wire [LINE_BUF_AW-1:0] line_buf_addr = x_cnt[10:2];
+    
+    wire [31:0] prev_line_pixels = line_buffer[line_buf_addr];
+    wire [7:0] prev_line_pix0 = prev_line_pixels[31:24];
+    wire [7:0] prev_line_pix1 = prev_line_pixels[23:16];
+    wire [7:0] prev_line_pix2 = prev_line_pixels[15:8];
+    wire [7:0] prev_line_pix3 = prev_line_pixels[7:0];
+    
+    always @(posedge clk) begin
+        line_buffer[line_buf_addr] <= vin;
+    end
+    
+    wire [7:0] v_diff_0 = (pix0 > prev_line_pix0) ? (pix0 - prev_line_pix0) : (prev_line_pix0 - pix0);
+    wire [7:0] v_diff_1 = (pix1 > prev_line_pix1) ? (pix1 - prev_line_pix1) : (prev_line_pix1 - pix1);
+    wire [7:0] v_diff_2 = (pix2 > prev_line_pix2) ? (pix2 - prev_line_pix2) : (prev_line_pix2 - pix2);
+    wire [7:0] v_diff_3 = (pix3 > prev_line_pix3) ? (pix3 - prev_line_pix3) : (prev_line_pix3 - pix3);
+
+    // =========================================================================
+    // Edge Detection - Diagonal
+    // =========================================================================
+    
+    reg [31:0] prev_prev_line_pixels;
+    always @(posedge clk) begin
+        prev_prev_line_pixels <= prev_line_pixels;
+    end
+    wire [7:0] prev_prev_line_pix3 = prev_prev_line_pixels[7:0];
+    
+    wire [7:0] d_ul_diff_0 = (pix0 > prev_prev_line_pix3) ? (pix0 - prev_prev_line_pix3) : (prev_prev_line_pix3 - pix0);
+    wire [7:0] d_ul_diff_1 = (pix1 > prev_line_pix0) ? (pix1 - prev_line_pix0) : (prev_line_pix0 - pix1);
+    wire [7:0] d_ul_diff_2 = (pix2 > prev_line_pix1) ? (pix2 - prev_line_pix1) : (prev_line_pix1 - pix2);
+    wire [7:0] d_ul_diff_3 = (pix3 > prev_line_pix2) ? (pix3 - prev_line_pix2) : (prev_line_pix2 - pix3);
+    
+    wire [7:0] d_ur_diff_0 = (pix0 > prev_line_pix1) ? (pix0 - prev_line_pix1) : (prev_line_pix1 - pix0);
+    wire [7:0] d_ur_diff_1 = (pix1 > prev_line_pix2) ? (pix1 - prev_line_pix2) : (prev_line_pix2 - pix1);
+    wire [7:0] d_ur_diff_2 = (pix2 > prev_line_pix3) ? (pix2 - prev_line_pix3) : (prev_line_pix3 - pix2);
+
+    // =========================================================================
+    // Maximum Gradient Calculation (for soft blending)
+    // Find the maximum gradient across all directions for each pixel
+    // =========================================================================
+    
+    function [7:0] max2;
+        input [7:0] a, b;
+        begin
+            max2 = (a > b) ? a : b;
+        end
+    endfunction
+    
+    wire [7:0] max_grad_0 = max2(max2(h_diff_0, v_diff_0), max2(d_ul_diff_0, d_ur_diff_0));
+    wire [7:0] max_grad_1 = max2(max2(h_diff_1, v_diff_1), max2(d_ul_diff_1, d_ur_diff_1));
+    wire [7:0] max_grad_2 = max2(max2(h_diff_2, v_diff_2), max2(d_ul_diff_2, d_ur_diff_2));
+    wire [7:0] max_grad_3 = max2(max2(h_diff_3, v_diff_3), d_ul_diff_3);  // No d_ur for pix3
+
+    // =========================================================================
+    // Soft Edge Detection with Gradient-Weighted Blending
+    // 
+    // Instead of binary edge detection, we use 3 zones:
+    // - Below EDGE_THRESH_LOW: Full dithering (smooth image areas)
+    // - Above EDGE_THRESH_HIGH: Full simple threshold (sharp text edges)
+    // - Between: Probabilistic blend based on gradient strength
+    //
+    // For the transition zone, we use the R2 sequence position as a
+    // spatial dither to decide between dithered and simple output.
+    // This creates a smooth visual transition without visible stripes.
+    // =========================================================================
+    
+    localparam [7:0] THRESH_RANGE = EDGE_THRESH_HIGH - EDGE_THRESH_LOW;
+    
+    // Spatial threshold varies based on position (using lower bits of coordinates)
+    // Creates 4x4 pattern for smooth blending
+    wire [3:0] spatial_phase = {y_pos[1:0], x_pos[1:0]};
+    
+    // Map spatial phase to threshold offset (0-15 maps to 0-THRESH_RANGE)
+    // This creates a Bayer-like pattern for the blend decision
+    wire [7:0] spatial_thresh_offset = (spatial_phase * THRESH_RANGE) >> 4;
+    wire [7:0] adaptive_thresh = EDGE_THRESH_LOW + spatial_thresh_offset;
+    
+    // Edge decision with soft blending:
+    // - Hard edge (simple) if gradient >= EDGE_THRESH_HIGH
+    // - Hard dither if gradient < EDGE_THRESH_LOW  
+    // - Spatially-dithered blend in between
+    wire use_simple_0 = (max_grad_0 >= EDGE_THRESH_HIGH) || 
+                        ((max_grad_0 >= EDGE_THRESH_LOW) && (max_grad_0 >= adaptive_thresh));
+    wire use_simple_1 = (max_grad_1 >= EDGE_THRESH_HIGH) || 
+                        ((max_grad_1 >= EDGE_THRESH_LOW) && (max_grad_1 >= adaptive_thresh));
+    wire use_simple_2 = (max_grad_2 >= EDGE_THRESH_HIGH) || 
+                        ((max_grad_2 >= EDGE_THRESH_LOW) && (max_grad_2 >= adaptive_thresh));
+    wire use_simple_3 = (max_grad_3 >= EDGE_THRESH_HIGH) || 
+                        ((max_grad_3 >= EDGE_THRESH_LOW) && (max_grad_3 >= adaptive_thresh));
+
+    // =========================================================================
+    // Output MUX: Select R2 dithered or simple based on soft edge detection
+    // =========================================================================
+    
+    wire [OUTPUT_BITS*4-1:0] final_out;
+    
+    generate
+        if (OUTPUT_BITS == 1) begin: gen_1bit_mux
+            assign final_out[3] = use_simple_0 ? simple_out[3] : r2_out[3];
+            assign final_out[2] = use_simple_1 ? simple_out[2] : r2_out[2];
+            assign final_out[1] = use_simple_2 ? simple_out[1] : r2_out[1];
+            assign final_out[0] = use_simple_3 ? simple_out[0] : r2_out[0];
+        end
+        else begin: gen_4bit_mux
+            assign final_out[15:12] = use_simple_0 ? simple_out[15:12] : r2_out[15:12];
+            assign final_out[11:8]  = use_simple_1 ? simple_out[11:8]  : r2_out[11:8];
+            assign final_out[7:4]   = use_simple_2 ? simple_out[7:4]   : r2_out[7:4];
+            assign final_out[3:0]   = use_simple_3 ? simple_out[3:0]   : r2_out[3:0];
+        end
+    endgenerate
+
     // Output register (1 cycle latency)
     always @(posedge clk) begin
-        vout <= dithered;
+        if (rst) begin
+            vout <= {OUTPUT_BITS*4{1'b0}};
+        end
+        else begin
+            vout <= final_out;
+        end
     end
 
 endmodule
