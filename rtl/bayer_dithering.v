@@ -11,9 +11,10 @@
 // bayer_dithering.v
 // Improved Bayer dithering with:
 // 1. Original 3x3 Bayer matrix (no phase scrambling)
-// 2. Gradient magnitude edge detection (horizontal + vertical)
+// 2. Gradient magnitude edge detection (horizontal + vertical + diagonal)
 //    - Detects edges by actual pixel difference, not just binary threshold
 //    - Catches edges like 100->160 that binary detection misses
+//    - Diagonal detection for italic text and angled lines
 //
 // 1 cycle latency (same as original)
 `timescale 1ns / 1ps
@@ -211,14 +212,57 @@ module bayer_dithering #(
     wire v_edge_3 = (v_diff_3 >= EDGE_THRESH);
 
     // =========================================================================
+    // Edge Detection - Diagonal (gradient magnitude)
+    // Upper-left (\) and upper-right (/) diagonals for italic text/angled lines
+    // =========================================================================
+    
+    // Store previous line buffer read for upper-left diagonal access
+    // This gives us access to the pixel group at x-4 on the previous line
+    reg [31:0] prev_prev_line_pixels;
+    always @(posedge clk) begin
+        prev_prev_line_pixels <= prev_line_pixels;
+    end
+    wire [7:0] prev_prev_line_pix3 = prev_prev_line_pixels[7:0];  // Rightmost pixel of previous group
+    
+    // Upper-left diagonal (\): current pixel vs prev_line at x-1
+    // pix0: compare with prev_prev_line_pix3 (previous group's rightmost)
+    // pix1: compare with prev_line_pix0
+    // pix2: compare with prev_line_pix1
+    // pix3: compare with prev_line_pix2
+    wire [7:0] d_ul_diff_0 = (pix0 > prev_prev_line_pix3) ? (pix0 - prev_prev_line_pix3) : (prev_prev_line_pix3 - pix0);
+    wire [7:0] d_ul_diff_1 = (pix1 > prev_line_pix0) ? (pix1 - prev_line_pix0) : (prev_line_pix0 - pix1);
+    wire [7:0] d_ul_diff_2 = (pix2 > prev_line_pix1) ? (pix2 - prev_line_pix1) : (prev_line_pix1 - pix2);
+    wire [7:0] d_ul_diff_3 = (pix3 > prev_line_pix2) ? (pix3 - prev_line_pix2) : (prev_line_pix2 - pix3);
+    
+    wire d_ul_edge_0 = (d_ul_diff_0 >= EDGE_THRESH);
+    wire d_ul_edge_1 = (d_ul_diff_1 >= EDGE_THRESH);
+    wire d_ul_edge_2 = (d_ul_diff_2 >= EDGE_THRESH);
+    wire d_ul_edge_3 = (d_ul_diff_3 >= EDGE_THRESH);
+    
+    // Upper-right diagonal (/): current pixel vs prev_line at x+1
+    // pix0: compare with prev_line_pix1
+    // pix1: compare with prev_line_pix2
+    // pix2: compare with prev_line_pix3
+    // pix3: would need next group - skip (use vertical edge instead)
+    wire [7:0] d_ur_diff_0 = (pix0 > prev_line_pix1) ? (pix0 - prev_line_pix1) : (prev_line_pix1 - pix0);
+    wire [7:0] d_ur_diff_1 = (pix1 > prev_line_pix2) ? (pix1 - prev_line_pix2) : (prev_line_pix2 - pix1);
+    wire [7:0] d_ur_diff_2 = (pix2 > prev_line_pix3) ? (pix2 - prev_line_pix3) : (prev_line_pix3 - pix2);
+    // pix3 upper-right not available without reading next address
+    
+    wire d_ur_edge_0 = (d_ur_diff_0 >= EDGE_THRESH);
+    wire d_ur_edge_1 = (d_ur_diff_1 >= EDGE_THRESH);
+    wire d_ur_edge_2 = (d_ur_diff_2 >= EDGE_THRESH);
+    // d_ur_edge_3 not computed - will rely on other edge detections
+
+    // =========================================================================
     // Combined Edge Detection (all combinational)
     // =========================================================================
     
-    // Edge detected if horizontal OR vertical gradient exceeds threshold
-    wire is_edge_0 = h_edge_0 || v_edge_0;
-    wire is_edge_1 = h_edge_1 || v_edge_1;
-    wire is_edge_2 = h_edge_2 || v_edge_2;
-    wire is_edge_3 = h_edge_3 || v_edge_3;
+    // Edge detected if any direction exceeds threshold
+    wire is_edge_0 = h_edge_0 || v_edge_0 || d_ul_edge_0 || d_ur_edge_0;
+    wire is_edge_1 = h_edge_1 || v_edge_1 || d_ul_edge_1 || d_ur_edge_1;
+    wire is_edge_2 = h_edge_2 || v_edge_2 || d_ul_edge_2 || d_ur_edge_2;
+    wire is_edge_3 = h_edge_3 || v_edge_3 || d_ul_edge_3;  // No d_ur_edge_3
 
     // =========================================================================
     // Output MUX: Select dithered or simple based on edge
