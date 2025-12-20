@@ -634,14 +634,11 @@ module caster(
     wire [3:0] s3_pixel_r2_dithered;
     r2_dithering #(
         .OUTPUT_BITS(1),
-        .COLORMODE(COLORMODE),
-        .LINE_WIDTH_MAX(2200)  // Max pixels per line for edge detection buffer
+        .COLORMODE(COLORMODE)
     ) r2_dithering_1b (
         .clk(clk),
-        .rst(rst),
         .vin(s2_pixel_linear),
         .vout(s3_pixel_r2_dithered),
-        .x_cnt(scan_h_cnt),
         .x_pos(scan_h_cnt),
         .y_pos(scan_v_cnt)
     );
