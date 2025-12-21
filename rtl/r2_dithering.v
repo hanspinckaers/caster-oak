@@ -48,11 +48,15 @@ module r2_dithering #(
     //   GR  (y%2==1: x%2==0 is G, x%2==1 is R)
     //
     // Bias values (negative = brighter output):
-    //   W: -40 (White contributes most to perceived brightness)
-    //   G: -16 (Green is most visible to human eye)
-    //   R: -16 (Red medium contribution)
-    //   B:   0 (Blue least visible, no bias)
+    //   W: -64 (White contributes most to perceived brightness)
+    //   G: -32 (Green is most visible to human eye)
+    //   R: -20 (Red medium contribution)
+    //   B: -8  (Blue least visible, small bias)
+    //
+    // Global brightness bias (positive = brighter output):
+    //   Added to all pixels before dithering to improve overall brightness
     // =========================================================================
+    localparam [8:0] GLOBAL_BIAS = 9'd12;  // Global brightness boost
     
     // Noise attenuation for 4-bit output mode
     localparam NOISE_ATTEN = (OUTPUT_BITS == 1) ? 0 : 4;
@@ -95,26 +99,26 @@ module r2_dithering #(
             wire is_w0 = (y_pos[0] == 1'b0) && (x0[0] == 1'b1);  // W at (odd_x, even_y)
             wire is_g0 = (y_pos[0] == 1'b1) && (x0[0] == 1'b0);  // G at (even_x, odd_y)
             wire is_r0 = (y_pos[0] == 1'b1) && (x0[0] == 1'b1);  // R at (odd_x, odd_y)
-            // B at (even_x, even_y) - no bias
-            assign cfa_bias_0 = is_w0 ? -8'sd40 : (is_g0 || is_r0) ? -8'sd16 : 8'sd0;
+            // B at (even_x, even_y)
+            assign cfa_bias_0 = is_w0 ? -8'sd64 : is_g0 ? -8'sd32 : is_r0 ? -8'sd20 : -8'sd8;
             
             // Pixel 1: x_pos + 1
             wire is_w1 = (y_pos[0] == 1'b0) && (x1[0] == 1'b1);
             wire is_g1 = (y_pos[0] == 1'b1) && (x1[0] == 1'b0);
             wire is_r1 = (y_pos[0] == 1'b1) && (x1[0] == 1'b1);
-            assign cfa_bias_1 = is_w1 ? -8'sd40 : (is_g1 || is_r1) ? -8'sd16 : 8'sd0;
+            assign cfa_bias_1 = is_w1 ? -8'sd64 : is_g1 ? -8'sd32 : is_r1 ? -8'sd20 : -8'sd8;
             
             // Pixel 2: x_pos + 2
             wire is_w2 = (y_pos[0] == 1'b0) && (x2[0] == 1'b1);
             wire is_g2 = (y_pos[0] == 1'b1) && (x2[0] == 1'b0);
             wire is_r2 = (y_pos[0] == 1'b1) && (x2[0] == 1'b1);
-            assign cfa_bias_2 = is_w2 ? -8'sd40 : (is_g2 || is_r2) ? -8'sd16 : 8'sd0;
+            assign cfa_bias_2 = is_w2 ? -8'sd64 : is_g2 ? -8'sd32 : is_r2 ? -8'sd20 : -8'sd8;
             
             // Pixel 3: x_pos + 3
             wire is_w3 = (y_pos[0] == 1'b0) && (x3[0] == 1'b1);
             wire is_g3 = (y_pos[0] == 1'b1) && (x3[0] == 1'b0);
             wire is_r3 = (y_pos[0] == 1'b1) && (x3[0] == 1'b1);
-            assign cfa_bias_3 = is_w3 ? -8'sd40 : (is_g3 || is_r3) ? -8'sd16 : 8'sd0;
+            assign cfa_bias_3 = is_w3 ? -8'sd64 : is_g3 ? -8'sd32 : is_r3 ? -8'sd20 : -8'sd8;
         end
         else begin: gen_mono_bias
             // No CFA bias for MONO mode
@@ -142,11 +146,16 @@ module r2_dithering #(
     wire [7:0] thresh2 = r2_full_2[15:8];
     wire [7:0] thresh3 = r2_full_3[15:8];
 
-    // Input pixels
-    wire [7:0] pix0 = vin[31:24];
-    wire [7:0] pix1 = vin[23:16];
-    wire [7:0] pix2 = vin[15:8];
-    wire [7:0] pix3 = vin[7:0];
+    // Input pixels with global brightness bias (saturate to 255)
+    wire [8:0] pix0_biased = {1'b0, vin[31:24]} + GLOBAL_BIAS;
+    wire [8:0] pix1_biased = {1'b0, vin[23:16]} + GLOBAL_BIAS;
+    wire [8:0] pix2_biased = {1'b0, vin[15:8]} + GLOBAL_BIAS;
+    wire [8:0] pix3_biased = {1'b0, vin[7:0]} + GLOBAL_BIAS;
+    
+    wire [7:0] pix0 = pix0_biased[8] ? 8'd255 : pix0_biased[7:0];
+    wire [7:0] pix1 = pix1_biased[8] ? 8'd255 : pix1_biased[7:0];
+    wire [7:0] pix2 = pix2_biased[8] ? 8'd255 : pix2_biased[7:0];
+    wire [7:0] pix3 = pix3_biased[8] ? 8'd255 : pix3_biased[7:0];
 
     // =========================================================================
     // Add offset to pixel with saturation (combinational)
