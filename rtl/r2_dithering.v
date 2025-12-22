@@ -62,8 +62,8 @@ module r2_dithering #(
     // Range of ±14 in 8-bit = ±7 in 4-bit Bayer equivalent
     localparam signed [4:0] DITHER_AMPLITUDE = 5'sd14;
     
-    // Global brightness bias (similar to Bayer's BIAS = 10)
-    localparam [8:0] GLOBAL_BIAS = 9'd10;
+    // Global brightness bias (increased to match Bayer brightness)
+    localparam [8:0] GLOBAL_BIAS = 9'd20;
     
     // Per-subpixel brightness bias (negative = brighter, shifts threshold down)
     // W gets the most boost since it contributes most to perceived brightness
