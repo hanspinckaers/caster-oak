@@ -9,15 +9,19 @@
 // PARTICULAR PURPOSE. Please see the CERN-OHL-P v2 for applicable conditions
 //
 // r2_dithering.v
-// Improved R2 Low Discrepancy Grid dithering with:
-// 1. Higher precision (16-bit) constants for reduced moire
-// 2. CFA-aware brightness bias for RGBW panels
-//    - W (White) subpixel biased toward white for better brightness
-//    - Accounts for BW/GR 2x2 CFA layout
+// CFA-aware R2 Low Discrepancy Grid dithering for RGBW panels:
+// 1. CFA-block aligned R2 - computed at (x/2, y/2) for coherent 2x2 blocks
+// 2. Per-subpixel phase offsets for W/G/R/B
+// 3. Reduced noise amplitude (like Bayer's ±7 range)
+// 4. Brightness bias favoring W subpixel
+//
+// RGBW CFA Layout (from vin_colormixer):
+//   Row 0 (even y): B W B W ... (B at even x, W at odd x)
+//   Row 1 (odd y):  G R G R ... (G at even x, R at odd x)
 //
 // Based on: https://blog.demofox.org/2022/02/01/two-low-discrepancy-grids/
 //
-// 1 cycle latency (same as original, drop-in replacement)
+// 1 cycle latency
 `timescale 1ns / 1ps
 `default_nettype none
 
@@ -33,124 +37,53 @@ module r2_dithering #(
 );
 
     // =========================================================================
-    // High-precision R2 constants (16-bit fixed point, 0.16 format)
-    // phi2   = 0.7548776662 * 65536 = 49471.2 ≈ 49471 (0xC13F)
-    // phi2^2 = 0.5698402909 * 65536 = 37346.7 ≈ 37347 (0x91E3)
-    // Higher precision reduces moire patterns on uniform gray areas
+    // R2 constants (16-bit fixed point)
+    // phi2   = 0.7548776662 * 65536 = 49471
+    // phi2^2 = 0.5698402909 * 65536 = 37347
     // =========================================================================
     localparam [15:0] R2_PHI2    = 16'd49471;
     localparam [15:0] R2_PHI2_SQ = 16'd37347;
 
     // =========================================================================
-    // CFA-aware brightness bias for RGBW
-    // CFA Layout (2x2 repeating):
+    // RGBW Configuration
+    // CFA Layout:
     //   BW  (y%2==0: x%2==0 is B, x%2==1 is W)
     //   GR  (y%2==1: x%2==0 is G, x%2==1 is R)
     //
-    // Bias values (negative = brighter output):
-    //   W: -64 (White contributes most to perceived brightness)
-    //   G: -32 (Green is most visible to human eye)
-    //   R: -20 (Red medium contribution)
-    //   B: -8  (Blue least visible, small bias)
-    //
-    // Global brightness bias (positive = brighter output):
-    //   Added to all pixels before dithering to improve overall brightness
+    // Phase offsets for each subpixel (creates different R2 patterns)
+    // These spread the dither pattern across the CFA block
     // =========================================================================
-    localparam [8:0] GLOBAL_BIAS = 9'd12;  // Global brightness boost
+    localparam [15:0] PHASE_B = 16'd0;      // Blue: base phase
+    localparam [15:0] PHASE_W = 16'd16384;  // White: +0.25 phase (quarter cycle)
+    localparam [15:0] PHASE_G = 16'd32768;  // Green: +0.5 phase (half cycle)
+    localparam [15:0] PHASE_R = 16'd49152;  // Red: +0.75 phase (three-quarter)
+
+    // Dither amplitude (like Bayer's ±7 range, but in 8-bit scale)
+    // Range of ±14 in 8-bit = ±7 in 4-bit Bayer equivalent
+    localparam signed [4:0] DITHER_AMPLITUDE = 5'sd14;
     
-    // Noise attenuation for 4-bit output mode
-    localparam NOISE_ATTEN = (OUTPUT_BITS == 1) ? 0 : 4;
-
-    // =========================================================================
-    // Stage 0: Calculate x offsets for 4 pixels and determine CFA position
-    // =========================================================================
-    wire [10:0] x0, x1, x2, x3;
+    // Global brightness bias (similar to Bayer's BIAS = 10)
+    localparam [8:0] GLOBAL_BIAS = 9'd10;
     
-    generate
-        if (COLORMODE == "RGBW") begin: gen_rgbw_x
-            // RGBW: 4 consecutive pixels horizontally
-            assign x0 = x_pos;
-            assign x1 = x_pos + 11'd1;
-            assign x2 = x_pos + 11'd2;
-            assign x3 = x_pos + 11'd3;
-        end
-        else begin: gen_mono_x
-            // MONO/DES: consecutive pixels
-            assign x0 = x_pos;
-            assign x1 = x_pos + 11'd1;
-            assign x2 = x_pos + 11'd2;
-            assign x3 = x_pos + 11'd3;
-        end
-    endgenerate
+    // Per-subpixel brightness bias (negative = brighter, shifts threshold down)
+    // W gets the most boost since it contributes most to perceived brightness
+    localparam signed [4:0] BIAS_W = -5'sd6;   // White: strong bright bias
+    localparam signed [4:0] BIAS_G = -5'sd3;   // Green: medium bias (visible)
+    localparam signed [4:0] BIAS_R = -5'sd2;   // Red: small bias
+    localparam signed [4:0] BIAS_B = 5'sd0;    // Blue: no bias (least visible)
 
     // =========================================================================
-    // CFA-aware brightness bias calculation
-    // For each pixel, determine subpixel type and apply appropriate bias
+    // Input pixels with global brightness bias
     // =========================================================================
-    wire signed [7:0] cfa_bias_0, cfa_bias_1, cfa_bias_2, cfa_bias_3;
-    
-    generate
-        if (COLORMODE == "RGBW") begin: gen_rgbw_bias
-            // Determine subpixel type for each of 4 pixels
-            // y_pos[0]: 0=even row (BW), 1=odd row (GR)
-            // x[0]: 0=left subpixel (B or G), 1=right subpixel (W or R)
-            
-            // Pixel 0: x_pos
-            wire is_w0 = (y_pos[0] == 1'b0) && (x0[0] == 1'b1);  // W at (odd_x, even_y)
-            wire is_g0 = (y_pos[0] == 1'b1) && (x0[0] == 1'b0);  // G at (even_x, odd_y)
-            wire is_r0 = (y_pos[0] == 1'b1) && (x0[0] == 1'b1);  // R at (odd_x, odd_y)
-            // B at (even_x, even_y)
-            assign cfa_bias_0 = is_w0 ? -8'sd64 : is_g0 ? -8'sd32 : is_r0 ? -8'sd20 : -8'sd8;
-            
-            // Pixel 1: x_pos + 1
-            wire is_w1 = (y_pos[0] == 1'b0) && (x1[0] == 1'b1);
-            wire is_g1 = (y_pos[0] == 1'b1) && (x1[0] == 1'b0);
-            wire is_r1 = (y_pos[0] == 1'b1) && (x1[0] == 1'b1);
-            assign cfa_bias_1 = is_w1 ? -8'sd64 : is_g1 ? -8'sd32 : is_r1 ? -8'sd20 : -8'sd8;
-            
-            // Pixel 2: x_pos + 2
-            wire is_w2 = (y_pos[0] == 1'b0) && (x2[0] == 1'b1);
-            wire is_g2 = (y_pos[0] == 1'b1) && (x2[0] == 1'b0);
-            wire is_r2 = (y_pos[0] == 1'b1) && (x2[0] == 1'b1);
-            assign cfa_bias_2 = is_w2 ? -8'sd64 : is_g2 ? -8'sd32 : is_r2 ? -8'sd20 : -8'sd8;
-            
-            // Pixel 3: x_pos + 3
-            wire is_w3 = (y_pos[0] == 1'b0) && (x3[0] == 1'b1);
-            wire is_g3 = (y_pos[0] == 1'b1) && (x3[0] == 1'b0);
-            wire is_r3 = (y_pos[0] == 1'b1) && (x3[0] == 1'b1);
-            assign cfa_bias_3 = is_w3 ? -8'sd64 : is_g3 ? -8'sd32 : is_r3 ? -8'sd20 : -8'sd8;
-        end
-        else begin: gen_mono_bias
-            // No CFA bias for MONO mode
-            assign cfa_bias_0 = 8'sd0;
-            assign cfa_bias_1 = 8'sd0;
-            assign cfa_bias_2 = 8'sd0;
-            assign cfa_bias_3 = 8'sd0;
-        end
-    endgenerate
+    wire [7:0] pix0_raw = vin[31:24];
+    wire [7:0] pix1_raw = vin[23:16];
+    wire [7:0] pix2_raw = vin[15:8];
+    wire [7:0] pix3_raw = vin[7:0];
 
-    // =========================================================================
-    // Compute R2 threshold (combinational)
-    // r2 = fract(x * phi2 + y * phi2^2)
-    // =========================================================================
-    
-    // Full precision calculation (11-bit pos * 16-bit const = 27-bit max)
-    wire [26:0] r2_full_0 = x0 * R2_PHI2 + y_pos * R2_PHI2_SQ;
-    wire [26:0] r2_full_1 = x1 * R2_PHI2 + y_pos * R2_PHI2_SQ;
-    wire [26:0] r2_full_2 = x2 * R2_PHI2 + y_pos * R2_PHI2_SQ;
-    wire [26:0] r2_full_3 = x3 * R2_PHI2 + y_pos * R2_PHI2_SQ;
-
-    // Extract 8-bit threshold (upper 8 bits of 16-bit fractional part)
-    wire [7:0] thresh0 = r2_full_0[15:8];
-    wire [7:0] thresh1 = r2_full_1[15:8];
-    wire [7:0] thresh2 = r2_full_2[15:8];
-    wire [7:0] thresh3 = r2_full_3[15:8];
-
-    // Input pixels with global brightness bias (saturate to 255)
-    wire [8:0] pix0_biased = {1'b0, vin[31:24]} + GLOBAL_BIAS;
-    wire [8:0] pix1_biased = {1'b0, vin[23:16]} + GLOBAL_BIAS;
-    wire [8:0] pix2_biased = {1'b0, vin[15:8]} + GLOBAL_BIAS;
-    wire [8:0] pix3_biased = {1'b0, vin[7:0]} + GLOBAL_BIAS;
+    wire [8:0] pix0_biased = {1'b0, pix0_raw} + GLOBAL_BIAS;
+    wire [8:0] pix1_biased = {1'b0, pix1_raw} + GLOBAL_BIAS;
+    wire [8:0] pix2_biased = {1'b0, pix2_raw} + GLOBAL_BIAS;
+    wire [8:0] pix3_biased = {1'b0, pix3_raw} + GLOBAL_BIAS;
     
     wire [7:0] pix0 = pix0_biased[8] ? 8'd255 : pix0_biased[7:0];
     wire [7:0] pix1 = pix1_biased[8] ? 8'd255 : pix1_biased[7:0];
@@ -158,46 +91,129 @@ module r2_dithering #(
     wire [7:0] pix3 = pix3_biased[8] ? 8'd255 : pix3_biased[7:0];
 
     // =========================================================================
-    // Add offset to pixel with saturation (combinational)
-    // Includes CFA-aware brightness bias
+    // CFA-block aligned R2 calculation
+    // Compute R2 at CFA block level (x/2, y/2) for coherent 2x2 blocks
+    // Then add per-subpixel phase offset
     // =========================================================================
+    
+    // X positions for 4 consecutive pixels
+    wire [10:0] x0 = x_pos;
+    wire [10:0] x1 = x_pos + 11'd1;
+    wire [10:0] x2 = x_pos + 11'd2;
+    wire [10:0] x3 = x_pos + 11'd3;
+    
+    // CFA block coordinates (divide by 2)
+    wire [9:0] block_x0 = x0[10:1];
+    wire [9:0] block_x1 = x1[10:1];
+    wire [9:0] block_x2 = x2[10:1];
+    wire [9:0] block_x3 = x3[10:1];
+    wire [9:0] block_y = y_pos[10:1];
 
-    // Convert threshold to signed offset (-128 to +127) and add CFA bias
-    wire signed [8:0] offset0 = ({1'b0, thresh0} - 9'sd128) + {cfa_bias_0[7], cfa_bias_0};
-    wire signed [8:0] offset1 = ({1'b0, thresh1} - 9'sd128) + {cfa_bias_1[7], cfa_bias_1};
-    wire signed [8:0] offset2 = ({1'b0, thresh2} - 9'sd128) + {cfa_bias_2[7], cfa_bias_2};
-    wire signed [8:0] offset3 = ({1'b0, thresh3} - 9'sd128) + {cfa_bias_3[7], cfa_bias_3};
+    // Determine subpixel type for each pixel
+    // y_pos[0]: 0=even row (BW), 1=odd row (GR)
+    // x[0]: 0=even column, 1=odd column
+    wire [1:0] subpix_type_0 = {y_pos[0], x0[0]};  // 00=B, 01=W, 10=G, 11=R
+    wire [1:0] subpix_type_1 = {y_pos[0], x1[0]};
+    wire [1:0] subpix_type_2 = {y_pos[0], x2[0]};
+    wire [1:0] subpix_type_3 = {y_pos[0], x3[0]};
 
-    // Apply noise attenuation
-    wire signed [8:0] atten_offset0 = offset0 >>> NOISE_ATTEN;
-    wire signed [8:0] atten_offset1 = offset1 >>> NOISE_ATTEN;
-    wire signed [8:0] atten_offset2 = offset2 >>> NOISE_ATTEN;
-    wire signed [8:0] atten_offset3 = offset3 >>> NOISE_ATTEN;
+    // Phase offset lookup based on subpixel type
+    wire [15:0] phase_0 = (subpix_type_0 == 2'b00) ? PHASE_B :
+                          (subpix_type_0 == 2'b01) ? PHASE_W :
+                          (subpix_type_0 == 2'b10) ? PHASE_G : PHASE_R;
+    wire [15:0] phase_1 = (subpix_type_1 == 2'b00) ? PHASE_B :
+                          (subpix_type_1 == 2'b01) ? PHASE_W :
+                          (subpix_type_1 == 2'b10) ? PHASE_G : PHASE_R;
+    wire [15:0] phase_2 = (subpix_type_2 == 2'b00) ? PHASE_B :
+                          (subpix_type_2 == 2'b01) ? PHASE_W :
+                          (subpix_type_2 == 2'b10) ? PHASE_G : PHASE_R;
+    wire [15:0] phase_3 = (subpix_type_3 == 2'b00) ? PHASE_B :
+                          (subpix_type_3 == 2'b01) ? PHASE_W :
+                          (subpix_type_3 == 2'b10) ? PHASE_G : PHASE_R;
 
-    // Add offset to pixel (extra bit for overflow detection)
-    wire signed [9:0] sum0 = {1'b0, pix0, 1'b0} + {atten_offset0, 1'b0};
-    wire signed [9:0] sum1 = {1'b0, pix1, 1'b0} + {atten_offset1, 1'b0};
-    wire signed [9:0] sum2 = {1'b0, pix2, 1'b0} + {atten_offset2, 1'b0};
-    wire signed [9:0] sum3 = {1'b0, pix3, 1'b0} + {atten_offset3, 1'b0};
+    // Brightness bias lookup based on subpixel type
+    wire signed [4:0] bright_bias_0 = (subpix_type_0 == 2'b00) ? BIAS_B :
+                                      (subpix_type_0 == 2'b01) ? BIAS_W :
+                                      (subpix_type_0 == 2'b10) ? BIAS_G : BIAS_R;
+    wire signed [4:0] bright_bias_1 = (subpix_type_1 == 2'b00) ? BIAS_B :
+                                      (subpix_type_1 == 2'b01) ? BIAS_W :
+                                      (subpix_type_1 == 2'b10) ? BIAS_G : BIAS_R;
+    wire signed [4:0] bright_bias_2 = (subpix_type_2 == 2'b00) ? BIAS_B :
+                                      (subpix_type_2 == 2'b01) ? BIAS_W :
+                                      (subpix_type_2 == 2'b10) ? BIAS_G : BIAS_R;
+    wire signed [4:0] bright_bias_3 = (subpix_type_3 == 2'b00) ? BIAS_B :
+                                      (subpix_type_3 == 2'b01) ? BIAS_W :
+                                      (subpix_type_3 == 2'b10) ? BIAS_G : BIAS_R;
 
-    // Saturate to 0-255 range
-    wire [7:0] sat0 = (sum0[9]) ? 8'd0 : (sum0[8]) ? 8'd255 : sum0[8:1];
-    wire [7:0] sat1 = (sum1[9]) ? 8'd0 : (sum1[8]) ? 8'd255 : sum1[8:1];
-    wire [7:0] sat2 = (sum2[9]) ? 8'd0 : (sum2[8]) ? 8'd255 : sum2[8:1];
-    wire [7:0] sat3 = (sum3[9]) ? 8'd0 : (sum3[8]) ? 8'd255 : sum3[8:1];
+    // Compute R2 at block level + phase offset
+    // r2 = fract(block_x * phi2 + block_y * phi2^2 + phase)
+    wire [25:0] r2_block_0 = block_x0 * R2_PHI2 + block_y * R2_PHI2_SQ;
+    wire [25:0] r2_block_1 = block_x1 * R2_PHI2 + block_y * R2_PHI2_SQ;
+    wire [25:0] r2_block_2 = block_x2 * R2_PHI2 + block_y * R2_PHI2_SQ;
+    wire [25:0] r2_block_3 = block_x3 * R2_PHI2 + block_y * R2_PHI2_SQ;
 
-    // Output: take top OUTPUT_BITS from each pixel
-    wire [OUTPUT_BITS*4-1:0] dithered = {
-        sat0[7-:OUTPUT_BITS],
-        sat1[7-:OUTPUT_BITS],
-        sat2[7-:OUTPUT_BITS],
-        sat3[7-:OUTPUT_BITS]
-    };
+    // Add phase offset (wraps naturally due to fixed-point)
+    wire [15:0] r2_phased_0 = r2_block_0[15:0] + phase_0;
+    wire [15:0] r2_phased_1 = r2_block_1[15:0] + phase_1;
+    wire [15:0] r2_phased_2 = r2_block_2[15:0] + phase_2;
+    wire [15:0] r2_phased_3 = r2_block_3[15:0] + phase_3;
 
-    // Output register (1 cycle latency)
-    always @(posedge clk) begin
-        vout <= dithered;
-    end
+    // Extract 4-bit threshold (like Bayer) from upper bits
+    wire [3:0] thresh_4b_0 = r2_phased_0[15:12];
+    wire [3:0] thresh_4b_1 = r2_phased_1[15:12];
+    wire [3:0] thresh_4b_2 = r2_phased_2[15:12];
+    wire [3:0] thresh_4b_3 = r2_phased_3[15:12];
+
+    // =========================================================================
+    // Dithering calculation (similar to Bayer structure)
+    // Work in 5-bit space like Bayer does
+    // =========================================================================
+    
+    // Convert pixel to 5-bit (upper 5 bits)
+    wire [4:0] pix5_0 = pix0[7:3];
+    wire [4:0] pix5_1 = pix1[7:3];
+    wire [4:0] pix5_2 = pix2[7:3];
+    wire [4:0] pix5_3 = pix3[7:3];
+
+    // Convert 4-bit threshold (0-15) to signed offset (-7 to +7)
+    // thresh 0 -> -7, thresh 7 -> 0, thresh 15 -> +7 (approximately)
+    wire signed [4:0] dither_0 = {1'b0, thresh_4b_0} - 5'sd8;
+    wire signed [4:0] dither_1 = {1'b0, thresh_4b_1} - 5'sd8;
+    wire signed [4:0] dither_2 = {1'b0, thresh_4b_2} - 5'sd8;
+    wire signed [4:0] dither_3 = {1'b0, thresh_4b_3} - 5'sd8;
+
+    // Add dither offset + brightness bias to pixel (with saturation)
+    wire signed [5:0] sum_0 = {1'b0, pix5_0} + {{1{dither_0[4]}}, dither_0} + {{1{bright_bias_0[4]}}, bright_bias_0};
+    wire signed [5:0] sum_1 = {1'b0, pix5_1} + {{1{dither_1[4]}}, dither_1} + {{1{bright_bias_1[4]}}, bright_bias_1};
+    wire signed [5:0] sum_2 = {1'b0, pix5_2} + {{1{dither_2[4]}}, dither_2} + {{1{bright_bias_2[4]}}, bright_bias_2};
+    wire signed [5:0] sum_3 = {1'b0, pix5_3} + {{1{dither_3[4]}}, dither_3} + {{1{bright_bias_3[4]}}, bright_bias_3};
+
+    // Saturate to 0-31 range (5-bit)
+    wire [4:0] sat_0 = sum_0[5] ? 5'd0 : (sum_0[4:0] > 5'd31) ? 5'd31 : sum_0[4:0];
+    wire [4:0] sat_1 = sum_1[5] ? 5'd0 : (sum_1[4:0] > 5'd31) ? 5'd31 : sum_1[4:0];
+    wire [4:0] sat_2 = sum_2[5] ? 5'd0 : (sum_2[4:0] > 5'd31) ? 5'd31 : sum_2[4:0];
+    wire [4:0] sat_3 = sum_3[5] ? 5'd0 : (sum_3[4:0] > 5'd31) ? 5'd31 : sum_3[4:0];
+
+    // Output: take top OUTPUT_BITS from each 5-bit result
+    generate
+        if (OUTPUT_BITS == 1) begin: gen_1bit_out
+            wire [3:0] dithered = {sat_0[4], sat_1[4], sat_2[4], sat_3[4]};
+            always @(posedge clk) begin
+                vout <= dithered;
+            end
+        end
+        else begin: gen_4bit_out
+            wire [15:0] dithered = {
+                sat_0[4:1],
+                sat_1[4:1],
+                sat_2[4:1],
+                sat_3[4:1]
+            };
+            always @(posedge clk) begin
+                vout <= dithered;
+            end
+        end
+    endgenerate
 
 endmodule
 
