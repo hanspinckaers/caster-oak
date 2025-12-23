@@ -54,9 +54,8 @@ module pixel_processing(
     //localparam FASTM_W2B_FRAMES = 6'd10;
 
     //
-    localparam FASTG_HOLDOFF_FRAMES = 6'd1;
-    localparam FASTG_B2G_FRAMES = 6'd2;
-    localparam FASTG_W2G_FRAMES = 6'd2;
+    localparam FASTG_GREY_NEAR_FRAMES = 6'd2;  // 1-step grey (B↔DG, W↔LG, DG↔LG)
+    localparam FASTG_GREY_FAR_FRAMES = 6'd5;   // 2-step grey (B→LG, W→DG)
     localparam FASTG_SETTLE_FRAMES = 6'd5;
 
     localparam AUTOLUT_HOLDOFF_FRAMES = 6'd60;
@@ -412,87 +411,60 @@ module pixel_processing(
             end
         end
         BASEMODE_FAST_GREY: begin
-            // Update strategy is similar in mono and hold stage (only binary)
+            // Simple: grey drives less, direction based on source vs target
+            // Bit 2: drive direction (1=white, 0=black)
+            // Bit 3: distance (1=far/2-step, 0=near/1-step)
+            wire is_grey_target = (pixel_prev[1:0] == 2'b01) || (pixel_prev[1:0] == 2'b10);
+            wire is_far = pixel_prev[3];
+            wire [5:0] grey_drive_frames = is_far ? FASTG_GREY_FAR_FRAMES : FASTG_GREY_NEAR_FRAMES;
+            wire grey_done = is_grey_target && (pixel_framecnt <= (FASTM_B2W_FRAMES - grey_drive_frames));
+            wire drive_dir = pixel_prev[2]; // 1=white, 0=black
+
             if (pixel_stage == STAGE_MONO) begin
-                // Currently updating
-                proc_output = drive_towards_input;
-                if ((proc_vin[3] != pixel_prev[1]) && (pixel_mindrv == 2'd0)) begin
-                    // Pixel state changed
+                if (proc_vin[3] != pixel_prev[1]) begin
+                    // Reversal - restart, recalc direction and distance
+                    wire new_dir = proc_vin[3:2] > pixel_prev[1:0];
+                    wire new_far = (proc_vin[3:2] ^ pixel_prev[1:0]) == 2'b10;
+                    proc_output = `NO_DRIVE;
                     proc_bo = proc_vin[3] ? (
-                        {proc_bi[15:12], STAGE_MONO, pixel_framecnt_2w, csr_mindrv, proc_vin[3:2]}
-                    ) : {proc_bi[15:12], STAGE_MONO, pixel_framecnt_2b, csr_mindrv, proc_vin[3:2]};
+                        {proc_bi[15:12], STAGE_MONO, FASTM_B2W_FRAMES, new_far, new_dir, proc_vin[3:2]}
+                    ) : {proc_bi[15:12], STAGE_MONO, FASTM_W2B_FRAMES, new_far, new_dir, proc_vin[3:2]};
                 end
                 else begin
-                    proc_output = pixel_prev[1] ? `DRIVE_WHITE : `DRIVE_BLACK;
-                    // Pixel didn't change, continue
-                    if (pixel_framecnt == 0) begin
-                        proc_bo = {proc_bi[15:12], STAGE_HOLD, FASTG_HOLDOFF_FRAMES, proc_bi[3:0]};
-                    end
-                    else begin
-                        proc_bo = {proc_bi[15:10], pixel_framecnt_dec, pixel_mindrv_dec, proc_bi[1:0]};
-                    end
+                    // Drive based on stored direction (grey stops early)
+                    proc_output = grey_done ? `NO_DRIVE : (drive_dir ? `DRIVE_WHITE : `DRIVE_BLACK);
+                    if (pixel_framecnt == 0)
+                        proc_bo = {proc_bi[15:12], STAGE_HOLD, FASTG_SETTLE_FRAMES, is_far, drive_dir, proc_vin[3:2]};
+                    else
+                        proc_bo = {proc_bi[15:10], pixel_framecnt_dec, proc_bi[3:0]};
                 end
             end
             else if (pixel_stage == STAGE_HOLD) begin
-                // Not currently updating, holding
+                // Settle
+                proc_output = `NO_DRIVE;
                 if (proc_vin[3] != pixel_prev[1]) begin
-                    // Pixel state changed
-                    proc_output = drive_towards_input;
+                    wire new_dir = proc_vin[3:2] > pixel_prev[1:0];
+                    wire new_far = (proc_vin[3:2] ^ pixel_prev[1:0]) == 2'b10;
                     proc_bo = proc_vin[3] ? (
-                        {proc_bi[15:12], STAGE_MONO, FASTM_B2W_FRAMES, csr_mindrv, proc_vin[3:2]}
-                    ) : {proc_bi[15:12], STAGE_MONO, FASTM_W2B_FRAMES, csr_mindrv, proc_vin[3:2]};
+                        {proc_bi[15:12], STAGE_MONO, FASTM_B2W_FRAMES, new_far, new_dir, proc_vin[3:2]}
+                    ) : {proc_bi[15:12], STAGE_MONO, FASTM_W2B_FRAMES, new_far, new_dir, proc_vin[3:2]};
                 end
-                else begin
-                    // Pixel state not changed
-                    proc_output = `NO_DRIVE;
-                    // Hold mode, update status counter
-                    if (pixel_framecnt == 0) begin
-                        proc_bo = (proc_vin[3:2] == 2'b10) ? (
-                                {proc_bi[15:12], STAGE_GREY, FASTG_W2G_FRAMES + FASTG_SETTLE_FRAMES, 2'b00, proc_vin[3:2]}
-                            ) : (proc_vin[3:2] == 2'b01) ? (
-                                {proc_bi[15:12], STAGE_GREY, FASTG_B2G_FRAMES + FASTG_SETTLE_FRAMES, 2'b00, proc_vin[3:2]}
-                            ) : (
-                                {proc_bi[15:12], STAGE_DONE, 6'd0, 2'b00, proc_vin[3:2]}
-                            );
-                    end
-                    else begin
-                        proc_bo = {proc_bi[15:10], pixel_framecnt_dec, proc_bi[3:0]};
-                    end
-                end
-            end
-            else if (pixel_stage == STAGE_GREY) begin
-                // Keep driving grey
-                if (pixel_framecnt > FASTG_SETTLE_FRAMES) begin
-                    proc_output = pixel_prev[1] ? `DRIVE_BLACK : `DRIVE_WHITE;
-                end
-                else begin
-                    proc_output = `NO_DRIVE;
-                end
-                if (pixel_framecnt == 0) begin
-                    proc_bo = {proc_bi[15:12], STAGE_DONE, 6'd0, proc_bi[3:0]};
-                end
-                else begin
+                else if (pixel_framecnt == 0)
+                    proc_bo = {proc_bi[15:12], STAGE_DONE, 6'd0, is_far, drive_dir, proc_vin[3:2]};
+                else
                     proc_bo = {proc_bi[15:10], pixel_framecnt_dec, proc_bi[3:0]};
-                end
             end
             else if (pixel_stage == STAGE_DONE) begin
                 if (proc_vin[3:2] != pixel_prev[1:0]) begin
-                    // Pixel state changed
-                    proc_output = drive_towards_input;
-                    proc_bo = ((proc_vin[3] != pixel_prev[1]) || (pixel_prev[1] != pixel_prev[0])) ? 
-                        (proc_vin[3] ? (
-                                {proc_bi[15:12], STAGE_MONO, FASTM_B2W_FRAMES, csr_mindrv, proc_vin[3:2]}
-                            ) : {proc_bi[15:12], STAGE_MONO, FASTM_W2B_FRAMES, csr_mindrv, proc_vin[3:2]}) :
-						((proc_vin[3:2] == 2'b10) ? (
-                                {proc_bi[15:12], STAGE_GREY, FASTG_W2G_FRAMES + FASTG_SETTLE_FRAMES, 2'b00, proc_vin[3:2]}
-                            ) : (proc_vin[3:2] == 2'b01) ? (
-                                {proc_bi[15:12], STAGE_GREY, FASTG_B2G_FRAMES + FASTG_SETTLE_FRAMES, 2'b00, proc_vin[3:2]}
-                            ) : (
-                                {proc_bi[15:12], STAGE_DONE, 6'd0, 2'b00, proc_vin[3:2]}
-                            ));
+                    // Compute direction and distance
+                    wire new_dir = proc_vin[3:2] > pixel_prev[1:0];
+                    wire new_far = (proc_vin[3:2] ^ pixel_prev[1:0]) == 2'b10;
+                    proc_output = `NO_DRIVE;
+                    proc_bo = new_dir ? (
+                        {proc_bi[15:12], STAGE_MONO, FASTM_B2W_FRAMES, new_far, 1'b1, proc_vin[3:2]}
+                    ) : {proc_bi[15:12], STAGE_MONO, FASTM_W2B_FRAMES, new_far, 1'b0, proc_vin[3:2]};
                 end
                 else begin
-                    // Pixel state not changed
                     proc_output = `NO_DRIVE;
                     proc_bo = proc_bi;
                 end
