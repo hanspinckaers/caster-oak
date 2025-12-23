@@ -45,7 +45,7 @@ module bayer_dithering #(
     input wire                       rst,
     input wire [31:0]                vin,
     output reg [3:0]                 vout_1b,    // 1-bit per pixel (FAST_MONO) - uses 3x3
-    output reg [7:0]                 vout_2b,    // 2-bit per pixel (FAST_GREY) - uses 4x4
+    output reg [7:0]                 vout_2b,    // 2-bit per pixel (FAST_GREY) - uses 8x8
     input wire [10:0]                x_cnt,      // Full x counter for line buffer addressing
     input wire [10:0]                y_cnt,      // Full y counter for line change detection
     input wire [2:0]                 x_pos,      // X position for Bayer matrix (mod 8)
@@ -135,63 +135,113 @@ module bayer_dithering #(
     endgenerate
 
     // =========================================================================
-    // CFA-Balanced 4x4 Bayer Matrix for 2-bit path (FAST_GREY)
-    // Each CFA color (B,W,G,R) gets equal average offset for neutral grays
-    // Matrix (4-bit signed, -8 to +7):
-    //   -8 -6 +1 +3    (row 0: B=-8, W=-6, B=+1, W=+3)
-    //   -7 -5  0 +2    (row 1: G=-7, R=-5, G= 0, R=+2)
-    //   -2 -4 +7 +5    (row 2: B=-2, W=-4, B=+7, W=+5)
-    //   -1 -3 +6 +4    (row 3: G=-1, R=-3, G=+6, R=+4)
-    // Per-color averages: B=(-8+1-2+7)/4=-0.5, W=(-6+3-4+5)/4=-0.5
-    //                     G=(-7+0-1+6)/4=-0.5, R=(-5+2-3+4)/4=-0.5 ✓
+    // 8x8 Bayer Matrix for 2-bit path (FAST_GREY) - Smooth gradients
+    // Standard ordered dither pattern normalized to 4-bit signed (-8 to +7)
+    // Larger matrix = smoother gradients with less visible pattern
     // =========================================================================
 
-    // For 4x4 CFA-balanced: use y_cnt for row (aligns with CFA pattern)
-    // Since we process 4 pixels per clock and matrix is 4-wide, columns are always 0,1,2,3
-    wire [1:0] bayer4_row = y_cnt[1:0];  // Use actual line counter, not mod-3
-    wire [1:0] bayer4_col0 = 2'd0;  // pix0 = even column (B/G)
-    wire [1:0] bayer4_col1 = 2'd1;  // pix1 = odd column (W/R)
-    wire [1:0] bayer4_col2 = 2'd2;  // pix2 = even column (B/G)
-    wire [1:0] bayer4_col3 = 2'd3;  // pix3 = odd column (W/R)
+    // Column addressing: x_pos[0] selects first/second half of 8-pixel cycle
+    // Group 0,2,4...: columns 0,1,2,3 | Group 1,3,5...: columns 4,5,6,7
+    wire [2:0] bayer8_row = y_cnt[2:0];
+    wire [2:0] bayer8_col0 = {x_pos[0], 2'b00};  // 0 or 4
+    wire [2:0] bayer8_col1 = {x_pos[0], 2'b01};  // 1 or 5
+    wire [2:0] bayer8_col2 = {x_pos[0], 2'b10};  // 2 or 6
+    wire [2:0] bayer8_col3 = {x_pos[0], 2'b11};  // 3 or 7
 
-    // 4x4 CFA-balanced Bayer lookup
-    function [3:0] bayer4x4_lookup;
-        input [1:0] row;
-        input [1:0] col;
+    // 8x8 Bayer lookup - standard ordered dither normalized to -8..+7
+    function [3:0] bayer8x8_lookup;
+        input [2:0] row;
+        input [2:0] col;
         begin
             case ({row, col})
-                4'b0000: bayer4x4_lookup = -4'sd8;  // row 0, col 0
-                4'b0001: bayer4x4_lookup = -4'sd6;  // row 0, col 1
-                4'b0010: bayer4x4_lookup =  4'sd1;  // row 0, col 2
-                4'b0011: bayer4x4_lookup =  4'sd3;  // row 0, col 3
-                4'b0100: bayer4x4_lookup = -4'sd7;  // row 1, col 0
-                4'b0101: bayer4x4_lookup = -4'sd5;  // row 1, col 1
-                4'b0110: bayer4x4_lookup =  4'sd0;  // row 1, col 2
-                4'b0111: bayer4x4_lookup =  4'sd2;  // row 1, col 3
-                4'b1000: bayer4x4_lookup = -4'sd2;  // row 2, col 0
-                4'b1001: bayer4x4_lookup = -4'sd4;  // row 2, col 1
-                4'b1010: bayer4x4_lookup =  4'sd7;  // row 2, col 2
-                4'b1011: bayer4x4_lookup =  4'sd5;  // row 2, col 3
-                4'b1100: bayer4x4_lookup = -4'sd1;  // row 3, col 0
-                4'b1101: bayer4x4_lookup = -4'sd3;  // row 3, col 1
-                4'b1110: bayer4x4_lookup =  4'sd6;  // row 3, col 2
-                4'b1111: bayer4x4_lookup =  4'sd4;  // row 3, col 3
-                default: bayer4x4_lookup =  4'sd0;
+                // Row 0
+                6'b000_000: bayer8x8_lookup = -4'sd8;
+                6'b000_001: bayer8x8_lookup =  4'sd0;
+                6'b000_010: bayer8x8_lookup = -4'sd6;
+                6'b000_011: bayer8x8_lookup =  4'sd2;
+                6'b000_100: bayer8x8_lookup = -4'sd7;
+                6'b000_101: bayer8x8_lookup =  4'sd1;
+                6'b000_110: bayer8x8_lookup = -4'sd5;
+                6'b000_111: bayer8x8_lookup =  4'sd3;
+                // Row 1
+                6'b001_000: bayer8x8_lookup =  4'sd4;
+                6'b001_001: bayer8x8_lookup = -4'sd4;
+                6'b001_010: bayer8x8_lookup =  4'sd6;
+                6'b001_011: bayer8x8_lookup = -4'sd2;
+                6'b001_100: bayer8x8_lookup =  4'sd4;
+                6'b001_101: bayer8x8_lookup = -4'sd3;
+                6'b001_110: bayer8x8_lookup =  4'sd6;
+                6'b001_111: bayer8x8_lookup = -4'sd1;
+                // Row 2
+                6'b010_000: bayer8x8_lookup = -4'sd5;
+                6'b010_001: bayer8x8_lookup =  4'sd3;
+                6'b010_010: bayer8x8_lookup = -4'sd6;
+                6'b010_011: bayer8x8_lookup =  4'sd1;
+                6'b010_100: bayer8x8_lookup = -4'sd4;
+                6'b010_101: bayer8x8_lookup =  4'sd3;
+                6'b010_110: bayer8x8_lookup = -4'sd6;
+                6'b010_111: bayer8x8_lookup =  4'sd2;
+                // Row 3
+                6'b011_000: bayer8x8_lookup =  4'sd7;
+                6'b011_001: bayer8x8_lookup = -4'sd1;
+                6'b011_010: bayer8x8_lookup =  4'sd5;
+                6'b011_011: bayer8x8_lookup = -4'sd3;
+                6'b011_100: bayer8x8_lookup =  4'sd7;
+                6'b011_101: bayer8x8_lookup =  4'sd0;
+                6'b011_110: bayer8x8_lookup =  4'sd5;
+                6'b011_111: bayer8x8_lookup = -4'sd2;
+                // Row 4
+                6'b100_000: bayer8x8_lookup = -4'sd7;
+                6'b100_001: bayer8x8_lookup =  4'sd1;
+                6'b100_010: bayer8x8_lookup = -4'sd5;
+                6'b100_011: bayer8x8_lookup =  4'sd3;
+                6'b100_100: bayer8x8_lookup = -4'sd7;
+                6'b100_101: bayer8x8_lookup =  4'sd0;
+                6'b100_110: bayer8x8_lookup = -4'sd5;
+                6'b100_111: bayer8x8_lookup =  4'sd2;
+                // Row 5
+                6'b101_000: bayer8x8_lookup =  4'sd5;
+                6'b101_001: bayer8x8_lookup = -4'sd3;
+                6'b101_010: bayer8x8_lookup =  4'sd6;
+                6'b101_011: bayer8x8_lookup = -4'sd1;
+                6'b101_100: bayer8x8_lookup =  4'sd4;
+                6'b101_101: bayer8x8_lookup = -4'sd3;
+                6'b101_110: bayer8x8_lookup =  4'sd6;
+                6'b101_111: bayer8x8_lookup = -4'sd2;
+                // Row 6
+                6'b110_000: bayer8x8_lookup = -4'sd4;
+                6'b110_001: bayer8x8_lookup =  4'sd4;
+                6'b110_010: bayer8x8_lookup = -4'sd6;
+                6'b110_011: bayer8x8_lookup =  4'sd2;
+                6'b110_100: bayer8x8_lookup = -4'sd4;
+                6'b110_101: bayer8x8_lookup =  4'sd3;
+                6'b110_110: bayer8x8_lookup = -4'sd6;
+                6'b110_111: bayer8x8_lookup =  4'sd1;
+                // Row 7
+                6'b111_000: bayer8x8_lookup =  4'sd7;
+                6'b111_001: bayer8x8_lookup =  4'sd0;
+                6'b111_010: bayer8x8_lookup =  4'sd6;
+                6'b111_011: bayer8x8_lookup = -4'sd2;
+                6'b111_100: bayer8x8_lookup =  4'sd7;
+                6'b111_101: bayer8x8_lookup = -4'sd1;
+                6'b111_110: bayer8x8_lookup =  4'sd5;
+                6'b111_111: bayer8x8_lookup = -4'sd3;
+                default: bayer8x8_lookup =  4'sd0;
             endcase
         end
     endfunction
 
-    wire [3:0] b0_4x4 = bayer4x4_lookup(bayer4_row, bayer4_col0);
-    wire [3:0] b1_4x4 = bayer4x4_lookup(bayer4_row, bayer4_col1);
-    wire [3:0] b2_4x4 = bayer4x4_lookup(bayer4_row, bayer4_col2);
-    wire [3:0] b3_4x4 = bayer4x4_lookup(bayer4_row, bayer4_col3);
+    wire [3:0] b0_8x8 = bayer8x8_lookup(bayer8_row, bayer8_col0);
+    wire [3:0] b1_8x8 = bayer8x8_lookup(bayer8_row, bayer8_col1);
+    wire [3:0] b2_8x8 = bayer8x8_lookup(bayer8_row, bayer8_col2);
+    wire [3:0] b3_8x8 = bayer8x8_lookup(bayer8_row, bayer8_col3);
 
-    // Halved 4x4 Bayer offsets for reduced dither range (less stripy)
+    // Halved 8x8 Bayer offsets for reduced dither range (less stripy)
     // Arithmetic right shift: {sign, sign, [3:1]} = value/2
-    wire [3:0] b0_4x4_half = {b0_4x4[3], b0_4x4[3:1]};
-    wire [3:0] b1_4x4_half = {b1_4x4[3], b1_4x4[3:1]};
-    wire [3:0] b2_4x4_half = {b2_4x4[3], b2_4x4[3:1]};
-    wire [3:0] b3_4x4_half = {b3_4x4[3], b3_4x4[3:1]};
+    wire [3:0] b0_8x8_half = {b0_8x8[3], b0_8x8[3:1]};
+    wire [3:0] b1_8x8_half = {b1_8x8[3], b1_8x8[3:1]};
+    wire [3:0] b2_8x8_half = {b2_8x8[3], b2_8x8[3:1]};
+    wire [3:0] b3_8x8_half = {b3_8x8[3], b3_8x8[3:1]};
 
     // =========================================================================
     // Standard Bayer Dithering Path with CFA Bias
@@ -246,11 +296,11 @@ module bayer_dithering #(
     wire [8:0] a3_2b = {1'b0, pix3} + {1'b0, BIAS_2B};
 
     wire [3:0] c0_2b, c1_2b, c2_2b, c3_2b;
-    // Use 4x4 CFA-balanced Bayer with halved offsets for reduced dither range
-    adder_sat adder_sat0_2b (a0_2b[8:4], b0_4x4_half, c0_2b);
-    adder_sat adder_sat1_2b (a1_2b[8:4], b1_4x4_half, c1_2b);
-    adder_sat adder_sat2_2b (a2_2b[8:4], b2_4x4_half, c2_2b);
-    adder_sat adder_sat3_2b (a3_2b[8:4], b3_4x4_half, c3_2b);
+    // Use 8x8 Bayer with halved offsets for smooth gradients
+    adder_sat adder_sat0_2b (a0_2b[8:4], b0_8x8_half, c0_2b);
+    adder_sat adder_sat1_2b (a1_2b[8:4], b1_8x8_half, c1_2b);
+    adder_sat adder_sat2_2b (a2_2b[8:4], b2_8x8_half, c2_2b);
+    adder_sat adder_sat3_2b (a3_2b[8:4], b3_8x8_half, c3_2b);
 
     // =========================================================================
     // Grayscale Path for Sharp B/W Text (200dpi mode)
@@ -289,11 +339,11 @@ module bayer_dithering #(
     wire [8:0] a3_gray = (cfa_row == 1'b0) ? ({1'b0, lum_for_w} + {1'b0, BIAS_2B}) : ({1'b0, luminance} + {1'b0, BIAS_2B});
 
     wire [3:0] c0_gray, c1_gray, c2_gray, c3_gray;
-    // Use 4x4 CFA-balanced Bayer with halved offsets (same as CFA path)
-    adder_sat adder_sat0_gray (a0_gray[8:4], b0_4x4_half, c0_gray);
-    adder_sat adder_sat1_gray (a1_gray[8:4], b1_4x4_half, c1_gray);
-    adder_sat adder_sat2_gray (a2_gray[8:4], b2_4x4_half, c2_gray);
-    adder_sat adder_sat3_gray (a3_gray[8:4], b3_4x4_half, c3_gray);
+    // Use 8x8 Bayer with halved offsets (same as CFA path)
+    adder_sat adder_sat0_gray (a0_gray[8:4], b0_8x8_half, c0_gray);
+    adder_sat adder_sat1_gray (a1_gray[8:4], b1_8x8_half, c1_gray);
+    adder_sat adder_sat2_gray (a2_gray[8:4], b2_8x8_half, c2_gray);
+    adder_sat adder_sat3_gray (a3_gray[8:4], b3_8x8_half, c3_gray);
 
     // Helper function to find max of two 8-bit values (used for local max detection)
     function [7:0] max2;
@@ -525,7 +575,7 @@ module bayer_dithering #(
     assign final_out_1b[1] = use_simple_2 ? simple_out_1b[1] : bayer_out_1b[1];
     assign final_out_1b[0] = use_simple_3 ? simple_out_1b[0] : bayer_out_1b[0];
 
-    // 2-bit output (4x4 CFA-balanced) - for FAST_GREY
+    // 2-bit output (8x8 smooth Bayer) - for FAST_GREY
     // Two paths (matches bayer_dither_4level_edge_aware_no_simple):
     // 1. Grayscale (200dpi): for black text on white (edge + low sat + bright bg + dark pixel)
     // 2. CFA Bayer dither: for everything else
