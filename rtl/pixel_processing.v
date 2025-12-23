@@ -266,8 +266,9 @@ module pixel_processing(
     wire [1:0] drive_towards_input = proc_vin[3] ? `DRIVE_WHITE: `DRIVE_BLACK;
     wire [1:0] drive_against_input = proc_vin[3] ? `DRIVE_BLACK: `DRIVE_WHITE;
 
-    // FAST_GREY helper: check if target is grey (01 or 10)
+    // FAST_GREY helpers
     wire fg_is_grey_target = (proc_vin[3:2] == 2'b01) || (proc_vin[3:2] == 2'b10);
+    wire fg_is_grey_source = (pixel_prev[1:0] == 2'b01) || (pixel_prev[1:0] == 2'b10);
 
     always @(*) begin
         // Normal mode, init mode override later
@@ -425,15 +426,20 @@ module pixel_processing(
                 if ((proc_vin[3] != pixel_prev[1]) && (pixel_mindrv == 2'd0)) begin
                     // Binary direction changed - restart
                     proc_bo = proc_vin[3] ? (
-                        {proc_bi[15:12], STAGE_MONO, pixel_framecnt_2w, csr_mindrv, proc_vin[3:2]}
-                    ) : {proc_bi[15:12], STAGE_MONO, pixel_framecnt_2b, csr_mindrv, proc_vin[3:2]};
+                        {proc_bi[15:12], STAGE_MONO, pixel_framecnt_2w, fg_is_grey_source, csr_mindrv[0], proc_vin[3:2]}
+                    ) : {proc_bi[15:12], STAGE_MONO, pixel_framecnt_2b, fg_is_grey_source, csr_mindrv[0], proc_vin[3:2]};
                 end
                 else if (pixel_framecnt == 0) begin
-                    // MONO done - B/W goes to HOLD (REST), Grey goes to GREY (REVERSE)
-                    if (fg_is_grey_target)
+                    // MONO done
+                    // Grey target OR grey source: needs reversal (GREY stage)
+                    // B/W to B/W only: just rest (HOLD stage)
+                    if (fg_is_grey_target || pixel_prev[3]) begin
+                        // pixel_prev[3] = source_was_grey flag stored when entering MONO
                         proc_bo = {proc_bi[15:12], STAGE_GREY, FASTG_B2G_FRAMES + FASTG_SETTLE_FRAMES, 2'b00, proc_vin[3:2]};
-                    else
+                    end
+                    else begin
                         proc_bo = {proc_bi[15:12], STAGE_HOLD, FASTG_BW_REST_FRAMES, 2'b00, proc_vin[3:2]};
+                    end
                 end
                 else begin
                     proc_bo = {proc_bi[15:10], pixel_framecnt_dec, pixel_mindrv_dec, proc_bi[1:0]};
@@ -456,14 +462,20 @@ module pixel_processing(
                 end
             end
             else if (pixel_stage == STAGE_GREY) begin
-                // REVERSE drive for grey targets, then REST
-                // pixel_prev[1]: 0=drove to black, 1=drove to white
-                // Reverse: if drove black, now drive white (and vice versa)
-                if (pixel_framecnt > FASTG_SETTLE_FRAMES) begin
-                    proc_output = pixel_prev[1] ? `DRIVE_BLACK : `DRIVE_WHITE;
+                // REVERSE drive for grey, with optional pre-rest for same-side
+                // Frame windows:
+                //   > B2G+SETTLE: pre-rest (NO_DRIVE) - only for same-side grey
+                //   > SETTLE && <= B2G+SETTLE: REVERSE drive
+                //   <= SETTLE: post-rest (NO_DRIVE)
+                // pixel_prev[1]: 0=target black-side (drove black), 1=target white-side (drove white)
+                if (pixel_framecnt > FASTG_B2G_FRAMES + FASTG_SETTLE_FRAMES) begin
+                    proc_output = `NO_DRIVE;  // Pre-rest (same-side grey)
+                end
+                else if (pixel_framecnt > FASTG_SETTLE_FRAMES) begin
+                    proc_output = pixel_prev[1] ? `DRIVE_BLACK : `DRIVE_WHITE;  // Reverse
                 end
                 else begin
-                    proc_output = `NO_DRIVE;
+                    proc_output = `NO_DRIVE;  // Post-rest
                 end
                 if (pixel_framecnt == 0) begin
                     proc_bo = {proc_bi[15:12], STAGE_DONE, 6'd0, proc_bi[3:0]};
@@ -476,17 +488,22 @@ module pixel_processing(
                 if (proc_vin[3:2] != pixel_prev[1:0]) begin
                     // Target changed
                     proc_output = `NO_DRIVE;
-                    // Check if same-side grey transition (W→LG or B→DG)
-                    // Same side = both have same MSB, skip MONO and go directly to GREY
+                    // Any transition involving grey needs reversal
+                    // Store source_was_grey in bit 3 for later
+                    // Bit 3: 1=source was grey (needs reversal even for B/W target)
+                    // Bit 2: mindrv LSB
                     if (fg_is_grey_target && (proc_vin[3] == pixel_prev[1])) begin
-                        // Same-side grey: skip MONO, go directly to short reverse
-                        proc_bo = {proc_bi[15:12], STAGE_GREY, FASTG_B2G_FRAMES + FASTG_SETTLE_FRAMES, 2'b00, proc_vin[3:2]};
+                        // Same-side grey (W→LG, B→DG): skip MONO, match total time
+                        // GREY stage: rest + reverse + rest = MONO + REST total
+                        // +1 because single stage vs two stages (accounts for stage transition)
+                        proc_bo = {proc_bi[15:12], STAGE_GREY, FASTM_B2W_FRAMES + FASTG_BW_REST_FRAMES + 6'd1, 2'b00, proc_vin[3:2]};
                     end
                     else begin
-                        // Different side or B/W target: need full MONO
+                        // Cross-side or B/W target: need full MONO
+                        // Store fg_is_grey_source in bit 3 to know if reversal needed after MONO
                         proc_bo = proc_vin[3] ? (
-                            {proc_bi[15:12], STAGE_MONO, FASTM_B2W_FRAMES, csr_mindrv, proc_vin[3:2]}
-                        ) : {proc_bi[15:12], STAGE_MONO, FASTM_W2B_FRAMES, csr_mindrv, proc_vin[3:2]};
+                            {proc_bi[15:12], STAGE_MONO, FASTM_B2W_FRAMES, fg_is_grey_source, csr_mindrv[0], proc_vin[3:2]}
+                        ) : {proc_bi[15:12], STAGE_MONO, FASTM_W2B_FRAMES, fg_is_grey_source, csr_mindrv[0], proc_vin[3:2]};
                     end
                 end
                 else begin
