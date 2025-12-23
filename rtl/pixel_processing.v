@@ -474,11 +474,20 @@ module pixel_processing(
             end
             else if (pixel_stage == STAGE_DONE) begin
                 if (proc_vin[3:2] != pixel_prev[1:0]) begin
-                    // Target changed - start MONO
+                    // Target changed
                     proc_output = `NO_DRIVE;
-                    proc_bo = proc_vin[3] ? (
-                        {proc_bi[15:12], STAGE_MONO, FASTM_B2W_FRAMES, csr_mindrv, proc_vin[3:2]}
-                    ) : {proc_bi[15:12], STAGE_MONO, FASTM_W2B_FRAMES, csr_mindrv, proc_vin[3:2]};
+                    // Check if same-side grey transition (W→LG or B→DG)
+                    // Same side = both have same MSB, skip MONO and go directly to GREY
+                    if (fg_is_grey_target && (proc_vin[3] == pixel_prev[1])) begin
+                        // Same-side grey: skip MONO, go directly to short reverse
+                        proc_bo = {proc_bi[15:12], STAGE_GREY, FASTG_B2G_FRAMES + FASTG_SETTLE_FRAMES, 2'b00, proc_vin[3:2]};
+                    end
+                    else begin
+                        // Different side or B/W target: need full MONO
+                        proc_bo = proc_vin[3] ? (
+                            {proc_bi[15:12], STAGE_MONO, FASTM_B2W_FRAMES, csr_mindrv, proc_vin[3:2]}
+                        ) : {proc_bi[15:12], STAGE_MONO, FASTM_W2B_FRAMES, csr_mindrv, proc_vin[3:2]};
+                    end
                 end
                 else begin
                     proc_output = `NO_DRIVE;
