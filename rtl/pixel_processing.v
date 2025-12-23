@@ -47,18 +47,14 @@ module pixel_processing(
     localparam MODE_AUTO_LUT_BLUE_NOISE = 4'd13; // 1101
     localparam MODE_FAST_MONO_R2 = 4'd14; // 1110 - R2 LDG dithering
 
-    //localparam FASTM_B2W_FRAMES = 6'd4;
-    //localparam FASTM_W2B_FRAMES = 6'd4;
-    localparam FASTM_B2W_FRAMES = 6'd9;
-    localparam FASTM_W2B_FRAMES = 6'd9;
-    //localparam FASTM_B2W_FRAMES = 6'd10;
-    //localparam FASTM_W2B_FRAMES = 6'd10;
+    localparam FASTM_B2W_FRAMES = 6'd7;      // MONO duration for all pixels
+    localparam FASTM_W2B_FRAMES = 6'd7;
 
-    //
-    localparam FASTG_GREY_NEAR_FRAMES = 6'd2;  // 1-step grey (B↔DG, W↔LG, DG↔LG)
-    localparam FASTG_GREY_FAR_FRAMES = 6'd5;   // 2-step grey (B→LG, W→DG)
-    localparam FASTG_SETTLE_FRAMES = 6'd5;
-    localparam FASTG_OVERDRIVE_FRAMES = 6'd2;  // Overdrive opposite direction to unstick particles
+    // FAST_GREY timing (synchronized: B/W=7+5=12, Grey=7+2+3=12)
+    localparam FASTG_BW_REST_FRAMES = 6'd5;  // REST for B/W after MONO
+    localparam FASTG_B2G_FRAMES = 6'd2;      // Reverse frames for grey (black side)
+    localparam FASTG_W2G_FRAMES = 6'd2;      // Reverse frames for grey (white side)
+    localparam FASTG_SETTLE_FRAMES = 6'd3;   // REST for grey after reverse
 
     localparam AUTOLUT_HOLDOFF_FRAMES = 6'd60;
 
@@ -270,18 +266,8 @@ module pixel_processing(
     wire [1:0] drive_towards_input = proc_vin[3] ? `DRIVE_WHITE: `DRIVE_BLACK;
     wire [1:0] drive_against_input = proc_vin[3] ? `DRIVE_BLACK: `DRIVE_WHITE;
 
-    // FAST_GREY mode helper wires
-    wire fg_is_grey_target = (pixel_prev[1:0] == 2'b01) || (pixel_prev[1:0] == 2'b10);
-    wire fg_is_far = pixel_prev[3];
-    wire [5:0] fg_grey_drive_frames = fg_is_far ? FASTG_GREY_FAR_FRAMES : FASTG_GREY_NEAR_FRAMES;
-    wire fg_grey_done = fg_is_grey_target && (pixel_framecnt <= (FASTM_B2W_FRAMES - fg_grey_drive_frames));
-    wire fg_drive_dir = pixel_prev[2];
-    wire fg_new_dir = proc_vin[3:2] > pixel_prev[1:0];
-    wire fg_new_far = (proc_vin[3:2] ^ pixel_prev[1:0]) == 2'b10;
-    // Overdrive: for B/W targets, drive opposite direction first to unstick particles
-    wire fg_in_overdrive = (pixel_framecnt > (FASTM_B2W_FRAMES - FASTG_OVERDRIVE_FRAMES));
-    wire fg_use_overdrive = !fg_is_grey_target && fg_in_overdrive;
-    wire fg_actual_drive_dir = fg_use_overdrive ? !fg_drive_dir : fg_drive_dir;
+    // FAST_GREY helper: check if target is grey (01 or 10)
+    wire fg_is_grey_target = (proc_vin[3:2] == 2'b01) || (proc_vin[3:2] == 2'b10);
 
     always @(*) begin
         // Normal mode, init mode override later
@@ -426,47 +412,73 @@ module pixel_processing(
             end
         end
         BASEMODE_FAST_GREY: begin
-            // Simple: grey drives less, direction based on source vs target
-            // Bit 2: drive direction (1=white, 0=black)
-            // Bit 3: distance (1=far/2-step, 0=near/1-step)
+            // Synchronized driving with reversal for grey targets
+            // All pixels drive to extreme during MONO (7 frames)
+            // B/W: REST in HOLD (5 frames), total 12
+            // Grey: REVERSE + REST in GREY (2+3 frames), total 12
+            // pixel_prev[1:0] = target (00=B, 01=DG, 10=LG, 11=W)
+            // pixel_prev[3:2] = mindrv
 
             if (pixel_stage == STAGE_MONO) begin
-                if (proc_vin[3] != pixel_prev[1]) begin
-                    // Reversal - restart, recalc direction and distance
-                    proc_output = `NO_DRIVE;
+                // Drive towards binary target (MSB of grey level)
+                proc_output = pixel_prev[1] ? `DRIVE_WHITE : `DRIVE_BLACK;
+                if ((proc_vin[3] != pixel_prev[1]) && (pixel_mindrv == 2'd0)) begin
+                    // Binary direction changed - restart
                     proc_bo = proc_vin[3] ? (
-                        {proc_bi[15:12], STAGE_MONO, FASTM_B2W_FRAMES, fg_new_far, fg_new_dir, proc_vin[3:2]}
-                    ) : {proc_bi[15:12], STAGE_MONO, FASTM_W2B_FRAMES, fg_new_far, fg_new_dir, proc_vin[3:2]};
+                        {proc_bi[15:12], STAGE_MONO, pixel_framecnt_2w, csr_mindrv, proc_vin[3:2]}
+                    ) : {proc_bi[15:12], STAGE_MONO, pixel_framecnt_2b, csr_mindrv, proc_vin[3:2]};
+                end
+                else if (pixel_framecnt == 0) begin
+                    // MONO done - B/W goes to HOLD (REST), Grey goes to GREY (REVERSE)
+                    if (fg_is_grey_target)
+                        proc_bo = {proc_bi[15:12], STAGE_GREY, FASTG_B2G_FRAMES + FASTG_SETTLE_FRAMES, 2'b00, proc_vin[3:2]};
+                    else
+                        proc_bo = {proc_bi[15:12], STAGE_HOLD, FASTG_BW_REST_FRAMES, 2'b00, proc_vin[3:2]};
                 end
                 else begin
-                    // Drive based on stored direction (grey stops early, B/W gets overdrive)
-                    proc_output = fg_grey_done ? `NO_DRIVE : (fg_actual_drive_dir ? `DRIVE_WHITE : `DRIVE_BLACK);
-                    if (pixel_framecnt == 0)
-                        proc_bo = {proc_bi[15:12], STAGE_HOLD, FASTG_SETTLE_FRAMES, fg_is_far, fg_drive_dir, proc_vin[3:2]};
-                    else
-                        proc_bo = {proc_bi[15:10], pixel_framecnt_dec, proc_bi[3:0]};
+                    proc_bo = {proc_bi[15:10], pixel_framecnt_dec, pixel_mindrv_dec, proc_bi[1:0]};
                 end
             end
             else if (pixel_stage == STAGE_HOLD) begin
-                // Settle
+                // REST for B/W targets (NO_DRIVE)
                 proc_output = `NO_DRIVE;
                 if (proc_vin[3] != pixel_prev[1]) begin
+                    // Binary direction changed - restart MONO
                     proc_bo = proc_vin[3] ? (
-                        {proc_bi[15:12], STAGE_MONO, FASTM_B2W_FRAMES, fg_new_far, fg_new_dir, proc_vin[3:2]}
-                    ) : {proc_bi[15:12], STAGE_MONO, FASTM_W2B_FRAMES, fg_new_far, fg_new_dir, proc_vin[3:2]};
+                        {proc_bi[15:12], STAGE_MONO, FASTM_B2W_FRAMES, csr_mindrv, proc_vin[3:2]}
+                    ) : {proc_bi[15:12], STAGE_MONO, FASTM_W2B_FRAMES, csr_mindrv, proc_vin[3:2]};
                 end
-                else if (pixel_framecnt == 0)
-                    proc_bo = {proc_bi[15:12], STAGE_DONE, 6'd0, fg_is_far, fg_drive_dir, proc_vin[3:2]};
-                else
+                else if (pixel_framecnt == 0) begin
+                    proc_bo = {proc_bi[15:12], STAGE_DONE, 6'd0, 2'b00, proc_vin[3:2]};
+                end
+                else begin
                     proc_bo = {proc_bi[15:10], pixel_framecnt_dec, proc_bi[3:0]};
+                end
+            end
+            else if (pixel_stage == STAGE_GREY) begin
+                // REVERSE drive for grey targets, then REST
+                // pixel_prev[1]: 0=drove to black, 1=drove to white
+                // Reverse: if drove black, now drive white (and vice versa)
+                if (pixel_framecnt > FASTG_SETTLE_FRAMES) begin
+                    proc_output = pixel_prev[1] ? `DRIVE_BLACK : `DRIVE_WHITE;
+                end
+                else begin
+                    proc_output = `NO_DRIVE;
+                end
+                if (pixel_framecnt == 0) begin
+                    proc_bo = {proc_bi[15:12], STAGE_DONE, 6'd0, proc_bi[3:0]};
+                end
+                else begin
+                    proc_bo = {proc_bi[15:10], pixel_framecnt_dec, proc_bi[3:0]};
+                end
             end
             else if (pixel_stage == STAGE_DONE) begin
                 if (proc_vin[3:2] != pixel_prev[1:0]) begin
-                    // Compute direction and distance
+                    // Target changed - start MONO
                     proc_output = `NO_DRIVE;
-                    proc_bo = fg_new_dir ? (
-                        {proc_bi[15:12], STAGE_MONO, FASTM_B2W_FRAMES, fg_new_far, 1'b1, proc_vin[3:2]}
-                    ) : {proc_bi[15:12], STAGE_MONO, FASTM_W2B_FRAMES, fg_new_far, 1'b0, proc_vin[3:2]};
+                    proc_bo = proc_vin[3] ? (
+                        {proc_bi[15:12], STAGE_MONO, FASTM_B2W_FRAMES, csr_mindrv, proc_vin[3:2]}
+                    ) : {proc_bi[15:12], STAGE_MONO, FASTM_W2B_FRAMES, csr_mindrv, proc_vin[3:2]};
                 end
                 else begin
                     proc_output = `NO_DRIVE;
