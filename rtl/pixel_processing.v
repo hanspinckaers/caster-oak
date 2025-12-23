@@ -17,7 +17,7 @@ module pixel_processing(
     input  wire [5:0]  csr_lutframe,// Total frames in LUT
     input  wire [1:0]  csr_mindrv,  // Dynamic frame rate cap setting
     input  wire [3:0]  proc_p_or,   // Original pixel
-    input  wire        proc_p_bd,   // Bayer dithered pixel to 1-bit
+    input  wire [1:0]  proc_p_bd,   // Bayer dithered pixel to 2-bit (4-level)
     input  wire        proc_p_n1,   // Blue noise dithered pixel to 1-bit
     input  wire [3:0]  proc_p_n4,   // Blue noise dithered pixel to 4-bit
     input  wire        proc_p_r2,   // R2 LDG dithered pixel to 1-bit
@@ -252,9 +252,9 @@ module pixel_processing(
     assign proc_p_li = {proc_p_or, 4'b0};
 
     wire [3:0] proc_vin = force_clear ? clear_color :
-        (pixel_basemode == BASEMODE_FAST_GREY) ? (proc_p_li[7:4]) :
+        (pixel_basemode == BASEMODE_FAST_GREY) ? ({proc_p_bd, 2'b0}) :
         (pixel_dither == DITHER_NONE) ? (proc_p_or) :
-        (pixel_dither == DITHER_BAYER) ? ({4{proc_p_bd}}) :
+        (pixel_dither == DITHER_BAYER) ? ({4{proc_p_bd[1]}}) :
         (pixel_dither == DITHER_BN_1BIT) ? ({4{proc_p_n1}}) :
         (pixel_dither == DITHER_BN_4BIT) ? (proc_p_n4) :
         (pixel_dither == DITHER_R2) ? ({4{proc_p_r2}}) : {4'd0};
