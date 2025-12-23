@@ -149,6 +149,8 @@ module bayer_dithering #(
     wire [2:0] bayer8_col3 = {x_pos[0], 2'b11};  // 3 or 7
 
     // 8x8 Bayer lookup - standard ordered dither normalized to -8..+7
+    // Note: Not CFA-balanced, but has superior spatial distribution
+    // Brightness compensation done via BIAS_2B parameter
     function [3:0] bayer8x8_lookup;
         input [2:0] row;
         input [2:0] col;
@@ -168,17 +170,17 @@ module bayer_dithering #(
                 6'b001_001: bayer8x8_lookup = -4'sd4;
                 6'b001_010: bayer8x8_lookup =  4'sd6;
                 6'b001_011: bayer8x8_lookup = -4'sd2;
-                6'b001_100: bayer8x8_lookup =  4'sd4;
+                6'b001_100: bayer8x8_lookup =  4'sd5;
                 6'b001_101: bayer8x8_lookup = -4'sd3;
-                6'b001_110: bayer8x8_lookup =  4'sd6;
+                6'b001_110: bayer8x8_lookup =  4'sd7;
                 6'b001_111: bayer8x8_lookup = -4'sd1;
                 // Row 2
                 6'b010_000: bayer8x8_lookup = -4'sd5;
                 6'b010_001: bayer8x8_lookup =  4'sd3;
-                6'b010_010: bayer8x8_lookup = -4'sd6;
+                6'b010_010: bayer8x8_lookup = -4'sd7;
                 6'b010_011: bayer8x8_lookup =  4'sd1;
                 6'b010_100: bayer8x8_lookup = -4'sd4;
-                6'b010_101: bayer8x8_lookup =  4'sd3;
+                6'b010_101: bayer8x8_lookup =  4'sd4;
                 6'b010_110: bayer8x8_lookup = -4'sd6;
                 6'b010_111: bayer8x8_lookup =  4'sd2;
                 // Row 3
@@ -186,26 +188,26 @@ module bayer_dithering #(
                 6'b011_001: bayer8x8_lookup = -4'sd1;
                 6'b011_010: bayer8x8_lookup =  4'sd5;
                 6'b011_011: bayer8x8_lookup = -4'sd3;
-                6'b011_100: bayer8x8_lookup =  4'sd7;
-                6'b011_101: bayer8x8_lookup =  4'sd0;
-                6'b011_110: bayer8x8_lookup =  4'sd5;
-                6'b011_111: bayer8x8_lookup = -4'sd2;
+                6'b011_100: bayer8x8_lookup =  4'sd6;
+                6'b011_101: bayer8x8_lookup = -4'sd2;
+                6'b011_110: bayer8x8_lookup =  4'sd4;
+                6'b011_111: bayer8x8_lookup = -4'sd4;
                 // Row 4
                 6'b100_000: bayer8x8_lookup = -4'sd7;
                 6'b100_001: bayer8x8_lookup =  4'sd1;
                 6'b100_010: bayer8x8_lookup = -4'sd5;
                 6'b100_011: bayer8x8_lookup =  4'sd3;
-                6'b100_100: bayer8x8_lookup = -4'sd7;
+                6'b100_100: bayer8x8_lookup = -4'sd8;
                 6'b100_101: bayer8x8_lookup =  4'sd0;
-                6'b100_110: bayer8x8_lookup = -4'sd5;
+                6'b100_110: bayer8x8_lookup = -4'sd6;
                 6'b100_111: bayer8x8_lookup =  4'sd2;
                 // Row 5
                 6'b101_000: bayer8x8_lookup =  4'sd5;
                 6'b101_001: bayer8x8_lookup = -4'sd3;
-                6'b101_010: bayer8x8_lookup =  4'sd6;
+                6'b101_010: bayer8x8_lookup =  4'sd7;
                 6'b101_011: bayer8x8_lookup = -4'sd1;
                 6'b101_100: bayer8x8_lookup =  4'sd4;
-                6'b101_101: bayer8x8_lookup = -4'sd3;
+                6'b101_101: bayer8x8_lookup = -4'sd4;
                 6'b101_110: bayer8x8_lookup =  4'sd6;
                 6'b101_111: bayer8x8_lookup = -4'sd2;
                 // Row 6
@@ -213,15 +215,15 @@ module bayer_dithering #(
                 6'b110_001: bayer8x8_lookup =  4'sd4;
                 6'b110_010: bayer8x8_lookup = -4'sd6;
                 6'b110_011: bayer8x8_lookup =  4'sd2;
-                6'b110_100: bayer8x8_lookup = -4'sd4;
+                6'b110_100: bayer8x8_lookup = -4'sd5;
                 6'b110_101: bayer8x8_lookup =  4'sd3;
-                6'b110_110: bayer8x8_lookup = -4'sd6;
+                6'b110_110: bayer8x8_lookup = -4'sd7;
                 6'b110_111: bayer8x8_lookup =  4'sd1;
                 // Row 7
-                6'b111_000: bayer8x8_lookup =  4'sd7;
-                6'b111_001: bayer8x8_lookup =  4'sd0;
-                6'b111_010: bayer8x8_lookup =  4'sd6;
-                6'b111_011: bayer8x8_lookup = -4'sd2;
+                6'b111_000: bayer8x8_lookup =  4'sd6;
+                6'b111_001: bayer8x8_lookup = -4'sd2;
+                6'b111_010: bayer8x8_lookup =  4'sd4;
+                6'b111_011: bayer8x8_lookup = -4'sd4;
                 6'b111_100: bayer8x8_lookup =  4'sd7;
                 6'b111_101: bayer8x8_lookup = -4'sd1;
                 6'b111_110: bayer8x8_lookup =  4'sd5;
@@ -285,15 +287,24 @@ module bayer_dithering #(
     adder_sat adder_sat2 (a2[8:4], b2, c2);
     adder_sat adder_sat3 (a3[8:4], b3, c3);
 
-    // 2-bit path: brightness bias for FAST_GREY
-    // Positive bias = brighter output (lower threshold for turning white)
-    localparam [7:0] BIAS_2B = 8'd15;  // Brighten 2-bit output
+    // 2-bit path: per-CFA brightness bias for FAST_GREY
+    // Compensates for 8x8 Bayer matrix CFA imbalance:
+    // B avg=-5.7, W avg=+1.9, G avg=+5.6, R avg=-1.9
+    // Add inverse to each CFA color to neutralize
+    localparam [7:0] BIAS_2B = 8'd15;      // Base brightness boost
+    localparam [7:0] BIAS_2B_B = BIAS_2B + 8'd6;   // B needs +6 (was darkened by -5.7)
+    localparam [7:0] BIAS_2B_W = BIAS_2B - 8'd2;   // W needs -2 (was brightened by +1.9)
+    localparam [7:0] BIAS_2B_G = BIAS_2B - 8'd6;   // G needs -6 (was brightened by +5.6)
+    localparam [7:0] BIAS_2B_R = BIAS_2B + 8'd2;   // R needs +2 (was darkened by -1.9)
 
-    // All subpixels get the same brightness boost
-    wire [8:0] a0_2b = {1'b0, pix0} + {1'b0, BIAS_2B};
-    wire [8:0] a1_2b = {1'b0, pix1} + {1'b0, BIAS_2B};
-    wire [8:0] a2_2b = {1'b0, pix2} + {1'b0, BIAS_2B};
-    wire [8:0] a3_2b = {1'b0, pix3} + {1'b0, BIAS_2B};
+    // Select bias based on CFA position (cfa_row: 0=BW, 1=GR)
+    wire [7:0] bias_2b_02 = (cfa_row == 1'b0) ? BIAS_2B_B : BIAS_2B_G;  // B or G
+    wire [7:0] bias_2b_13 = (cfa_row == 1'b0) ? BIAS_2B_W : BIAS_2B_R;  // W or R
+
+    wire [8:0] a0_2b = {1'b0, pix0} + {1'b0, bias_2b_02};
+    wire [8:0] a1_2b = {1'b0, pix1} + {1'b0, bias_2b_13};
+    wire [8:0] a2_2b = {1'b0, pix2} + {1'b0, bias_2b_02};
+    wire [8:0] a3_2b = {1'b0, pix3} + {1'b0, bias_2b_13};
 
     wire [3:0] c0_2b, c1_2b, c2_2b, c3_2b;
     // Use 8x8 Bayer with halved offsets for smooth gradients

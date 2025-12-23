@@ -653,10 +653,12 @@ module caster(
     reg [63:0] s3_bi_pixel;
     reg [15:0] s3_vin_pixel;
     reg [3:0] s3_op_valid;
+    reg [10:0] s3_x_cnt;  // Pipeline x counter for video detection
     always @(posedge clk) begin
         s3_vin_pixel <= s2_vin_selected_y4;
         s3_bi_pixel <= bi_pixel;
         s3_op_valid <= s2_op_valid;
+        s3_x_cnt <= scan_h_cnt;
     end
 
     // STAGE 3
@@ -734,6 +736,7 @@ module caster(
     reg [15:0] s4_pixel_bn4b_dithered;
     reg [3:0] s4_pixel_r2_dithered;
     reg [3:0] s4_op_valid;
+    reg [10:0] s4_x_cnt;  // Pipeline x counter for video detection
 
     always @(posedge clk) begin
         s4_vin_pixel <= s3_vin_pixel;
@@ -744,6 +747,7 @@ module caster(
         s4_pixel_bn4b_dithered <= s3_pixel_bn4b_dithered;
         s4_pixel_r2_dithered <= s3_pixel_r2_dithered;
         s4_op_valid <= s3_op_valid;
+        s4_x_cnt <= s3_x_cnt;
     end
 
     // STAGE 4
@@ -751,6 +755,54 @@ module caster(
     always @(posedge clk) begin
         s4_active <= s3_active;
     end
+
+    // =========================================================================
+    // Video Mode Neighbor Detection
+    // Propagate video mode to neighboring pixels for smoother video regions
+    // =========================================================================
+
+    // Extract video mode flag from each pixel's state
+    // For FAST_GREY mode: video mode when fg_counter >= 3 (bits [9:8] of state)
+    // Also check if mode is FAST_GREY (bits [15:12] = 4'b1011)
+    wire [3:0] cur_video_flags;
+    generate
+        for (i = 0; i < 4; i = i + 1) begin: gen_video_flags
+            wire [15:0] pix_state = s4_bi_pixel[i*16+:16];
+            wire is_fast_grey = (pix_state[15:12] == 4'b1011);
+            wire [1:0] fg_counter = pix_state[9:8];
+            wire [1:0] fg_stage = pix_state[11:10];
+            // Video mode: FAST_GREY + STAGE_DONE (2'd0) + counter >= 3
+            assign cur_video_flags[i] = is_fast_grey && (fg_stage == 2'd0) && (fg_counter >= 2'd3);
+        end
+    endgenerate
+
+    // Horizontal neighbor: previous 4-pixel group
+    reg [3:0] prev_video_flags;
+    always @(posedge clk) begin
+        if (s4_active)
+            prev_video_flags <= cur_video_flags;
+    end
+
+    // Vertical neighbor: line buffer storing video flags from previous line
+    localparam VIDEO_LINE_BUF_DEPTH = 550;  // 2200 pixels / 4 pixels per clock
+    localparam VIDEO_LINE_BUF_AW = 10;      // clog2(550) = 10
+    (* ram_style = "distributed" *)
+    reg [3:0] video_line_buffer [0:VIDEO_LINE_BUF_DEPTH-1];
+    wire [VIDEO_LINE_BUF_AW-1:0] video_buf_addr = s4_x_cnt[VIDEO_LINE_BUF_AW-1:0];
+    wire [3:0] prev_line_video_flags = video_line_buffer[video_buf_addr];
+
+    always @(posedge clk) begin
+        if (s4_active)
+            video_line_buffer[video_buf_addr] <= cur_video_flags;
+    end
+
+    // Compute neighbor_video for each pixel
+    // Check: left neighbor, right neighbor (within group), prev group, prev line
+    wire [3:0] neighbor_video;
+    assign neighbor_video[0] = prev_video_flags[3] | cur_video_flags[1] | prev_line_video_flags[0];
+    assign neighbor_video[1] = cur_video_flags[0] | cur_video_flags[2] | prev_line_video_flags[1];
+    assign neighbor_video[2] = cur_video_flags[1] | cur_video_flags[3] | prev_line_video_flags[2];
+    assign neighbor_video[3] = cur_video_flags[2] | prev_line_video_flags[3];  // No right neighbor yet
 
     wire [7:0] pixel_comb;
     wire [63:0] bo_pixel_comb;
@@ -785,7 +837,8 @@ module caster(
                 .op_cmd(op_cmd),
                 .op_param(op_param),
                 .op_framecnt(op_framecnt),
-                .al_framecnt(al_framecnt)
+                .al_framecnt(al_framecnt),
+                .neighbor_video(neighbor_video[i])
             );
 
             // Output
