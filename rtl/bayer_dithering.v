@@ -28,23 +28,24 @@
 
 module bayer_dithering #(
     parameter COLORMODE = "RGBW",
-    parameter OUTPUT_BITS = 1,        // 1 = binary (2 levels), 2 = 4 gray levels
     parameter LINE_WIDTH_MAX = 2200,  // Max pixels per line (compile-time buffer sizing)
     parameter EDGE_THRESH_LOW = 80,   // Below this: full dithering (smooth gradients)
     parameter EDGE_THRESH_HIGH = 160, // Above this: full simple threshold (sharp text)
-    // CFA threshold bias - for equal perceived thickness
+    // CFA threshold bias - for equal perceived thickness (1-bit path only)
     // W=high (stays black more, counters brightness)
     // B/G/R=low (turns white more, counters dimness)
     parameter CFA_BIAS_B = 20,        // Blue - easy to turn ON
     parameter CFA_BIAS_W = 50,        // White - hard to turn ON
     parameter CFA_BIAS_G = 20,        // Green - easy to turn ON
     parameter CFA_BIAS_R = 20,        // Red - easy to turn ON
-    parameter FATTEN = 0              // Lower threshold globally (fatter text, 0-20)
+    parameter FATTEN = 0,             // Lower threshold globally (fatter text, 0-20)
+    parameter W_DARKEN = 4'd0         // Darken W subpixels in 2-bit simple path
 ) (
     input wire                       clk,
     input wire                       rst,
     input wire [31:0]                vin,
-    output reg [OUTPUT_BITS*4-1:0]   vout,
+    output reg [3:0]                 vout_1b,    // 1-bit per pixel (FAST_MONO) - uses 3x3
+    output reg [7:0]                 vout_2b,    // 2-bit per pixel (FAST_GREY) - uses 4x4
     input wire [10:0]                x_cnt,      // Full x counter for line buffer addressing
     input wire [10:0]                y_cnt,      // Full y counter for line change detection
     input wire [2:0]                 x_pos,      // X position for Bayer matrix (mod 8)
@@ -145,11 +146,13 @@ module bayer_dithering #(
     //                     G=(-7+0-1+6)/4=-0.5, R=(-5+2-3+4)/4=-0.5 ✓
     // =========================================================================
 
-    wire [1:0] bayer4_row = y_pos[1:0];
-    wire [1:0] bayer4_col0 = x_pos[1:0];
-    wire [1:0] bayer4_col1 = x_pos[1:0] + 2'd1;
-    wire [1:0] bayer4_col2 = x_pos[1:0] + 2'd2;
-    wire [1:0] bayer4_col3 = x_pos[1:0] + 2'd3;
+    // For 4x4 CFA-balanced: use y_cnt for row (aligns with CFA pattern)
+    // Since we process 4 pixels per clock and matrix is 4-wide, columns are always 0,1,2,3
+    wire [1:0] bayer4_row = y_cnt[1:0];  // Use actual line counter, not mod-3
+    wire [1:0] bayer4_col0 = 2'd0;  // pix0 = even column (B/G)
+    wire [1:0] bayer4_col1 = 2'd1;  // pix1 = odd column (W/R)
+    wire [1:0] bayer4_col2 = 2'd2;  // pix2 = even column (B/G)
+    wire [1:0] bayer4_col3 = 2'd3;  // pix3 = odd column (W/R)
 
     // 4x4 CFA-balanced Bayer lookup
     function [3:0] bayer4x4_lookup;
@@ -182,6 +185,13 @@ module bayer_dithering #(
     wire [3:0] b1_4x4 = bayer4x4_lookup(bayer4_row, bayer4_col1);
     wire [3:0] b2_4x4 = bayer4x4_lookup(bayer4_row, bayer4_col2);
     wire [3:0] b3_4x4 = bayer4x4_lookup(bayer4_row, bayer4_col3);
+
+    // Halved 4x4 Bayer offsets for reduced dither range (less stripy)
+    // Arithmetic right shift: {sign, sign, [3:1]} = value/2
+    wire [3:0] b0_4x4_half = {b0_4x4[3], b0_4x4[3:1]};
+    wire [3:0] b1_4x4_half = {b1_4x4[3], b1_4x4[3:1]};
+    wire [3:0] b2_4x4_half = {b2_4x4[3], b2_4x4[3:1]};
+    wire [3:0] b3_4x4_half = {b3_4x4[3], b3_4x4[3:1]};
 
     // =========================================================================
     // Standard Bayer Dithering Path with CFA Bias
@@ -225,29 +235,22 @@ module bayer_dithering #(
     adder_sat adder_sat2 (a2[8:4], b2, c2);
     adder_sat adder_sat3 (a3[8:4], b3, c3);
 
-    // 2-bit path: CFA-aware bias for prettier colors (FAST_GREY)
-    // W subpixels slightly darker to add depth while preserving color visibility
-    // CFA pattern: Row0=B,W,B,W  Row1=G,R,G,R
-    // pix0,pix2 = B or G (color), pix1,pix3 = W or R
-    localparam W_DARKEN = 4'd0;  // Disabled for testing
+    // 2-bit path: brightness bias for FAST_GREY
+    // Positive bias = brighter output (lower threshold for turning white)
+    localparam [7:0] BIAS_2B = 8'd15;  // Brighten 2-bit output
 
-    // Color subpixels (B/G): no bias change
-    wire [8:0] a0_2b = {1'b0, pix0};
-    wire [8:0] a2_2b = {1'b0, pix2};
-
-    // W/R subpixels: darken W only (row 0), keep R natural (row 1)
-    // Clamp to 0 to avoid underflow
-    wire [7:0] pix1_dark = (pix1 > {4'd0, W_DARKEN}) ? (pix1 - {4'd0, W_DARKEN}) : 8'd0;
-    wire [7:0] pix3_dark = (pix3 > {4'd0, W_DARKEN}) ? (pix3 - {4'd0, W_DARKEN}) : 8'd0;
-    wire [8:0] a1_2b = (cfa_row == 1'b0) ? {1'b0, pix1_dark} : {1'b0, pix1};
-    wire [8:0] a3_2b = (cfa_row == 1'b0) ? {1'b0, pix3_dark} : {1'b0, pix3};
+    // All subpixels get the same brightness boost
+    wire [8:0] a0_2b = {1'b0, pix0} + {1'b0, BIAS_2B};
+    wire [8:0] a1_2b = {1'b0, pix1} + {1'b0, BIAS_2B};
+    wire [8:0] a2_2b = {1'b0, pix2} + {1'b0, BIAS_2B};
+    wire [8:0] a3_2b = {1'b0, pix3} + {1'b0, BIAS_2B};
 
     wire [3:0] c0_2b, c1_2b, c2_2b, c3_2b;
-    // Use 4x4 CFA-balanced Bayer (matches simulation bayer_dither_4level_edge_aware_no_simple)
-    adder_sat adder_sat0_2b (a0_2b[8:4], b0_4x4, c0_2b);
-    adder_sat adder_sat1_2b (a1_2b[8:4], b1_4x4, c1_2b);
-    adder_sat adder_sat2_2b (a2_2b[8:4], b2_4x4, c2_2b);
-    adder_sat adder_sat3_2b (a3_2b[8:4], b3_4x4, c3_2b);
+    // Use 4x4 CFA-balanced Bayer with halved offsets for reduced dither range
+    adder_sat adder_sat0_2b (a0_2b[8:4], b0_4x4_half, c0_2b);
+    adder_sat adder_sat1_2b (a1_2b[8:4], b1_4x4_half, c1_2b);
+    adder_sat adder_sat2_2b (a2_2b[8:4], b2_4x4_half, c2_2b);
+    adder_sat adder_sat3_2b (a3_2b[8:4], b3_4x4_half, c3_2b);
 
     // =========================================================================
     // Grayscale Path for Sharp B/W Text (200dpi mode)
@@ -279,17 +282,18 @@ module bayer_dithering #(
 
     // Grayscale dithering: use luminance for all subpixels
     // But W subpixels use lightened luminance when dark
-    wire [8:0] a0_gray = {1'b0, luminance};
-    wire [8:0] a1_gray = (cfa_row == 1'b0) ? {1'b0, lum_for_w} : {1'b0, luminance};  // W gets lightened
-    wire [8:0] a2_gray = {1'b0, luminance};
-    wire [8:0] a3_gray = (cfa_row == 1'b0) ? {1'b0, lum_for_w} : {1'b0, luminance};  // W gets lightened
+    // Also apply BIAS_2B for consistent brightness with CFA path
+    wire [8:0] a0_gray = {1'b0, luminance} + {1'b0, BIAS_2B};
+    wire [8:0] a1_gray = (cfa_row == 1'b0) ? ({1'b0, lum_for_w} + {1'b0, BIAS_2B}) : ({1'b0, luminance} + {1'b0, BIAS_2B});
+    wire [8:0] a2_gray = {1'b0, luminance} + {1'b0, BIAS_2B};
+    wire [8:0] a3_gray = (cfa_row == 1'b0) ? ({1'b0, lum_for_w} + {1'b0, BIAS_2B}) : ({1'b0, luminance} + {1'b0, BIAS_2B});
 
     wire [3:0] c0_gray, c1_gray, c2_gray, c3_gray;
-    // Use 4x4 CFA-balanced Bayer (same as CFA path)
-    adder_sat adder_sat0_gray (a0_gray[8:4], b0_4x4, c0_gray);
-    adder_sat adder_sat1_gray (a1_gray[8:4], b1_4x4, c1_gray);
-    adder_sat adder_sat2_gray (a2_gray[8:4], b2_4x4, c2_gray);
-    adder_sat adder_sat3_gray (a3_gray[8:4], b3_4x4, c3_gray);
+    // Use 4x4 CFA-balanced Bayer with halved offsets (same as CFA path)
+    adder_sat adder_sat0_gray (a0_gray[8:4], b0_4x4_half, c0_gray);
+    adder_sat adder_sat1_gray (a1_gray[8:4], b1_4x4_half, c1_gray);
+    adder_sat adder_sat2_gray (a2_gray[8:4], b2_4x4_half, c2_gray);
+    adder_sat adder_sat3_gray (a3_gray[8:4], b3_4x4_half, c3_gray);
 
     // Helper function to find max of two 8-bit values (used for local max detection)
     function [7:0] max2;
@@ -511,47 +515,39 @@ module bayer_dithering #(
                         ((max_grad_3 >= EDGE_THRESH_LOW) && (max_grad_3 >= adaptive_thresh));
 
     // =========================================================================
-    // Output MUX: Select dithered or simple based on soft edge detection
+    // Output: Always compute both 1-bit and 2-bit paths
     // =========================================================================
 
-    generate
-        if (OUTPUT_BITS == 1) begin: gen_1bit_out
-            wire [3:0] final_out;
-            assign final_out[3] = use_simple_0 ? simple_out_1b[3] : bayer_out_1b[3];
-            assign final_out[2] = use_simple_1 ? simple_out_1b[2] : bayer_out_1b[2];
-            assign final_out[1] = use_simple_2 ? simple_out_1b[1] : bayer_out_1b[1];
-            assign final_out[0] = use_simple_3 ? simple_out_1b[0] : bayer_out_1b[0];
+    // 1-bit output (3x3 Bayer with CFA bias) - for FAST_MONO
+    wire [3:0] final_out_1b;
+    assign final_out_1b[3] = use_simple_0 ? simple_out_1b[3] : bayer_out_1b[3];
+    assign final_out_1b[2] = use_simple_1 ? simple_out_1b[2] : bayer_out_1b[2];
+    assign final_out_1b[1] = use_simple_2 ? simple_out_1b[1] : bayer_out_1b[1];
+    assign final_out_1b[0] = use_simple_3 ? simple_out_1b[0] : bayer_out_1b[0];
 
-            always @(posedge clk) begin
-                if (rst)
-                    vout <= 4'b0;
-                else
-                    vout <= final_out;
-            end
-        end
-        else begin: gen_2bit_out
-            // 2-bit per pixel = 8 bits total for 4 pixels
-            // Two paths (matches bayer_dither_4level_edge_aware_no_simple):
-            // 1. Grayscale (200dpi): for black text on white (edge + low sat + bright bg + dark pixel)
-            // 2. CFA Bayer dither: for everything else
-            wire [1:0] out0 = (pix0 >= 8'd250) ? 2'b11 : (pix0 <= 8'd5) ? 2'b00 :
-                              use_gray_0 ? c0_gray[3:2] : c0_2b[3:2];
-            wire [1:0] out1 = (pix1 >= 8'd250) ? 2'b11 : (pix1 <= 8'd5) ? 2'b00 :
-                              use_gray_1 ? c1_gray[3:2] : c1_2b[3:2];
-            wire [1:0] out2 = (pix2 >= 8'd250) ? 2'b11 : (pix2 <= 8'd5) ? 2'b00 :
-                              use_gray_2 ? c2_gray[3:2] : c2_2b[3:2];
-            wire [1:0] out3 = (pix3 >= 8'd250) ? 2'b11 : (pix3 <= 8'd5) ? 2'b00 :
-                              use_gray_3 ? c3_gray[3:2] : c3_2b[3:2];
-            wire [7:0] final_out = {out0, out1, out2, out3};
+    // 2-bit output (4x4 CFA-balanced) - for FAST_GREY
+    // Two paths (matches bayer_dither_4level_edge_aware_no_simple):
+    // 1. Grayscale (200dpi): for black text on white (edge + low sat + bright bg + dark pixel)
+    // 2. CFA Bayer dither: for everything else
+    wire [1:0] out0_2b = (pix0 >= 8'd250) ? 2'b11 : (pix0 <= 8'd5) ? 2'b00 :
+                         use_gray_0 ? c0_gray[3:2] : c0_2b[3:2];
+    wire [1:0] out1_2b = (pix1 >= 8'd250) ? 2'b11 : (pix1 <= 8'd5) ? 2'b00 :
+                         use_gray_1 ? c1_gray[3:2] : c1_2b[3:2];
+    wire [1:0] out2_2b = (pix2 >= 8'd250) ? 2'b11 : (pix2 <= 8'd5) ? 2'b00 :
+                         use_gray_2 ? c2_gray[3:2] : c2_2b[3:2];
+    wire [1:0] out3_2b = (pix3 >= 8'd250) ? 2'b11 : (pix3 <= 8'd5) ? 2'b00 :
+                         use_gray_3 ? c3_gray[3:2] : c3_2b[3:2];
+    wire [7:0] final_out_2b = {out0_2b, out1_2b, out2_2b, out3_2b};
 
-            always @(posedge clk) begin
-                if (rst)
-                    vout <= 8'b0;
-                else
-                    vout <= final_out;
-            end
+    always @(posedge clk) begin
+        if (rst) begin
+            vout_1b <= 4'b0;
+            vout_2b <= 8'b0;
+        end else begin
+            vout_1b <= final_out_1b;
+            vout_2b <= final_out_2b;
         end
-    endgenerate
+    end
 
 endmodule
 

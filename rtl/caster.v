@@ -448,7 +448,8 @@ module caster(
 
     // Image dithering
     // All these processing has 1 cycle delay
-    wire [7:0] s3_pixel_bayer_dithered;  // 2-bit per pixel for 4-level dithering
+    wire [3:0] s3_pixel_bayer_1b;         // 1-bit per pixel for FAST_MONO (3x3 Bayer)
+    wire [7:0] s3_pixel_bayer_2b;         // 2-bit per pixel for FAST_GREY (4x4 CFA-balanced)
     wire [3:0] s3_pixel_bn1b_dithered;
     wire [15:0] s3_pixel_bn4b_dithered;
 
@@ -622,13 +623,13 @@ module caster(
 
     bayer_dithering #(
         .COLORMODE(COLORMODE),
-        .OUTPUT_BITS(2),      // 2-bit per pixel for 4-level dithering (FAST_GREY mode)
         .LINE_WIDTH_MAX(2200) // Max pixels per line for edge detection buffer
     ) bayer_dithering (
         .clk(clk),
         .rst(rst),
         .vin(s2_pixel_linear),
-        .vout(s3_pixel_bayer_dithered),
+        .vout_1b(s3_pixel_bayer_1b),   // 1-bit for FAST_MONO (3x3 Bayer)
+        .vout_2b(s3_pixel_bayer_2b),   // 2-bit for FAST_GREY (4x4 CFA-balanced)
         .x_cnt(scan_h_cnt),
         .y_cnt(scan_v_cnt),
         .x_pos(by_x_pos),
@@ -727,7 +728,8 @@ module caster(
     // Move to next stage
     reg [63:0] s4_bi_pixel;
     reg [15:0] s4_vin_pixel;
-    reg [7:0] s4_pixel_bayer_dithered;   // 2-bit per pixel for 4-level dithering
+    reg [3:0] s4_pixel_bayer_1b;          // 1-bit per pixel for FAST_MONO
+    reg [7:0] s4_pixel_bayer_2b;          // 2-bit per pixel for FAST_GREY
     reg [3:0] s4_pixel_bn1b_dithered;
     reg [15:0] s4_pixel_bn4b_dithered;
     reg [3:0] s4_pixel_r2_dithered;
@@ -736,7 +738,8 @@ module caster(
     always @(posedge clk) begin
         s4_vin_pixel <= s3_vin_pixel;
         s4_bi_pixel <= s3_bi_pixel;
-        s4_pixel_bayer_dithered <= s3_pixel_bayer_dithered;
+        s4_pixel_bayer_1b <= s3_pixel_bayer_1b;
+        s4_pixel_bayer_2b <= s3_pixel_bayer_2b;
         s4_pixel_bn1b_dithered <= s3_pixel_bn1b_dithered;
         s4_pixel_bn4b_dithered <= s3_pixel_bn4b_dithered;
         s4_pixel_r2_dithered <= s3_pixel_r2_dithered;
@@ -754,7 +757,8 @@ module caster(
     generate
         for (i = 0; i < 4; i = i + 1) begin: gen_pix_proc
             wire [3:0] proc_p_or = s4_vin_pixel[i*4+:4];
-            wire [1:0] proc_p_bd = s4_pixel_bayer_dithered[i*2+:2];  // 2-bit for 4-level dithering
+            wire proc_p_bd_1b = s4_pixel_bayer_1b[i];              // 1-bit for FAST_MONO
+            wire [1:0] proc_p_bd_2b = s4_pixel_bayer_2b[i*2+:2];   // 2-bit for FAST_GREY
             wire proc_p_n1 = s4_pixel_bn1b_dithered[i];
             wire [3:0] proc_p_n4 = s4_pixel_bn4b_dithered[i*4+:4];
             wire proc_p_r2 = s4_pixel_r2_dithered[i];
@@ -767,7 +771,8 @@ module caster(
                 .csr_lutframe(csr_lut_frame),
                 .csr_mindrv(csr_mindrv),
                 .proc_p_or(proc_p_or),
-                .proc_p_bd(proc_p_bd),
+                .proc_p_bd_1b(proc_p_bd_1b),
+                .proc_p_bd_2b(proc_p_bd_2b),
                 .proc_p_n1(proc_p_n1),
                 .proc_p_n4(proc_p_n4),
                 .proc_p_r2(proc_p_r2),
