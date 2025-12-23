@@ -448,7 +448,7 @@ module caster(
 
     // Image dithering
     // All these processing has 1 cycle delay
-    wire [3:0] s3_pixel_bayer_dithered;
+    wire [7:0] s3_pixel_bayer_dithered;  // 2-bit per pixel for 4-level dithering
     wire [3:0] s3_pixel_bn1b_dithered;
     wire [15:0] s3_pixel_bn4b_dithered;
 
@@ -555,9 +555,10 @@ module caster(
     endgenerate
 
     // Insert mirroring here
+    // TEMPORARILY DISABLED to save LUTs
     wire [31:0] s2_vin_mirrored;
     wire [31:0] s2_vin_selected;
-
+    /*
     line_reverse #(
         .BUFDEPTH(10), // 1024-depth
         .PIXWIDTH(32) // 4-pixel wide
@@ -574,6 +575,9 @@ module caster(
     );
 
     assign s2_vin_selected = mirror_en ? s2_vin_mirrored : s2_vin_overlayed;
+    */
+    assign s2_vin_mirrored = 32'b0;
+    assign s2_vin_selected = s2_vin_overlayed;
 
     // Slice Y8 version downto Y4
     wire [15:0] s2_vin_selected_y4 = {s2_vin_selected[31:28],
@@ -618,7 +622,8 @@ module caster(
 
     bayer_dithering #(
         .COLORMODE(COLORMODE),
-        .LINE_WIDTH_MAX(2200)  // Max pixels per line for edge detection buffer
+        .OUTPUT_BITS(2),      // 2-bit per pixel for 4-level dithering (FAST_GREY mode)
+        .LINE_WIDTH_MAX(2200) // Max pixels per line for edge detection buffer
     ) bayer_dithering (
         .clk(clk),
         .rst(rst),
@@ -722,16 +727,15 @@ module caster(
     // Move to next stage
     reg [63:0] s4_bi_pixel;
     reg [15:0] s4_vin_pixel;
-    reg [3:0] s4_pixel_bayer_dithered;
+    reg [7:0] s4_pixel_bayer_dithered;   // 2-bit per pixel for 4-level dithering
     reg [3:0] s4_pixel_bn1b_dithered;
     reg [15:0] s4_pixel_bn4b_dithered;
     reg [3:0] s4_pixel_r2_dithered;
     reg [3:0] s4_op_valid;
-    
+
     always @(posedge clk) begin
         s4_vin_pixel <= s3_vin_pixel;
         s4_bi_pixel <= s3_bi_pixel;
-        // For 1 bit dithering, only pick MSB of each pixel
         s4_pixel_bayer_dithered <= s3_pixel_bayer_dithered;
         s4_pixel_bn1b_dithered <= s3_pixel_bn1b_dithered;
         s4_pixel_bn4b_dithered <= s3_pixel_bn4b_dithered;
@@ -750,7 +754,7 @@ module caster(
     generate
         for (i = 0; i < 4; i = i + 1) begin: gen_pix_proc
             wire [3:0] proc_p_or = s4_vin_pixel[i*4+:4];
-            wire proc_p_bd = s4_pixel_bayer_dithered[i];
+            wire [1:0] proc_p_bd = s4_pixel_bayer_dithered[i*2+:2];  // 2-bit for 4-level dithering
             wire proc_p_n1 = s4_pixel_bn1b_dithered[i];
             wire [3:0] proc_p_n4 = s4_pixel_bn4b_dithered[i*4+:4];
             wire proc_p_r2 = s4_pixel_r2_dithered[i];

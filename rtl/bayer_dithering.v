@@ -134,10 +134,60 @@ module bayer_dithering #(
     endgenerate
 
     // =========================================================================
+    // CFA-Balanced 4x4 Bayer Matrix for 2-bit path (FAST_GREY)
+    // Each CFA color (B,W,G,R) gets equal average offset for neutral grays
+    // Matrix (4-bit signed, -8 to +7):
+    //   -8 -6 +1 +3    (row 0: B=-8, W=-6, B=+1, W=+3)
+    //   -7 -5  0 +2    (row 1: G=-7, R=-5, G= 0, R=+2)
+    //   -2 -4 +7 +5    (row 2: B=-2, W=-4, B=+7, W=+5)
+    //   -1 -3 +6 +4    (row 3: G=-1, R=-3, G=+6, R=+4)
+    // Per-color averages: B=(-8+1-2+7)/4=-0.5, W=(-6+3-4+5)/4=-0.5
+    //                     G=(-7+0-1+6)/4=-0.5, R=(-5+2-3+4)/4=-0.5 ✓
+    // =========================================================================
+
+    wire [1:0] bayer4_row = y_pos[1:0];
+    wire [1:0] bayer4_col0 = x_pos[1:0];
+    wire [1:0] bayer4_col1 = x_pos[1:0] + 2'd1;
+    wire [1:0] bayer4_col2 = x_pos[1:0] + 2'd2;
+    wire [1:0] bayer4_col3 = x_pos[1:0] + 2'd3;
+
+    // 4x4 CFA-balanced Bayer lookup
+    function [3:0] bayer4x4_lookup;
+        input [1:0] row;
+        input [1:0] col;
+        begin
+            case ({row, col})
+                4'b0000: bayer4x4_lookup = -4'sd8;  // row 0, col 0
+                4'b0001: bayer4x4_lookup = -4'sd6;  // row 0, col 1
+                4'b0010: bayer4x4_lookup =  4'sd1;  // row 0, col 2
+                4'b0011: bayer4x4_lookup =  4'sd3;  // row 0, col 3
+                4'b0100: bayer4x4_lookup = -4'sd7;  // row 1, col 0
+                4'b0101: bayer4x4_lookup = -4'sd5;  // row 1, col 1
+                4'b0110: bayer4x4_lookup =  4'sd0;  // row 1, col 2
+                4'b0111: bayer4x4_lookup =  4'sd2;  // row 1, col 3
+                4'b1000: bayer4x4_lookup = -4'sd2;  // row 2, col 0
+                4'b1001: bayer4x4_lookup = -4'sd4;  // row 2, col 1
+                4'b1010: bayer4x4_lookup =  4'sd7;  // row 2, col 2
+                4'b1011: bayer4x4_lookup =  4'sd5;  // row 2, col 3
+                4'b1100: bayer4x4_lookup = -4'sd1;  // row 3, col 0
+                4'b1101: bayer4x4_lookup = -4'sd3;  // row 3, col 1
+                4'b1110: bayer4x4_lookup =  4'sd6;  // row 3, col 2
+                4'b1111: bayer4x4_lookup =  4'sd4;  // row 3, col 3
+                default: bayer4x4_lookup =  4'sd0;
+            endcase
+        end
+    endfunction
+
+    wire [3:0] b0_4x4 = bayer4x4_lookup(bayer4_row, bayer4_col0);
+    wire [3:0] b1_4x4 = bayer4x4_lookup(bayer4_row, bayer4_col1);
+    wire [3:0] b2_4x4 = bayer4x4_lookup(bayer4_row, bayer4_col2);
+    wire [3:0] b3_4x4 = bayer4x4_lookup(bayer4_row, bayer4_col3);
+
+    // =========================================================================
     // Standard Bayer Dithering Path with CFA Bias
     // =========================================================================
 
-    localparam BIAS = 9'd10;
+    localparam BIAS = 9'd10;  // Positive = lower threshold (more white pixels)
 
     wire [7:0] pix0 = vin[31:24];
     wire [7:0] pix1 = vin[23:16];
@@ -159,16 +209,11 @@ module bayer_dithering #(
     wire [7:0] cfa_bias_02 = (cfa_row == 1'b0) ? CFA_BIAS_B[7:0] : CFA_BIAS_G[7:0];
     wire [7:0] cfa_bias_13 = (cfa_row == 1'b0) ? CFA_BIAS_W[7:0] : CFA_BIAS_R[7:0];
 
-    // Adjusted bias: BIAS + FATTEN - CFA_BIAS
-    // FATTEN lowers threshold (more pixels ON = fatter text)
-    // CFA_BIAS raises threshold (fewer pixels ON for that color)
-    wire signed [9:0] adj_bias_02 = $signed({1'b0, BIAS}) + $signed({1'b0, FATTEN[8:0]}) - $signed({2'b0, cfa_bias_02});
-    wire signed [9:0] adj_bias_13 = $signed({1'b0, BIAS}) + $signed({1'b0, FATTEN[8:0]}) - $signed({2'b0, cfa_bias_13});
+    // Simple unsigned bias: BIAS + FATTEN - CFA_BIAS, clamped to 0 minimum
+    wire [8:0] bias_02 = (BIAS + FATTEN > {1'b0, cfa_bias_02}) ? (BIAS + FATTEN - {1'b0, cfa_bias_02}) : 9'd0;
+    wire [8:0] bias_13 = (BIAS + FATTEN > {1'b0, cfa_bias_13}) ? (BIAS + FATTEN - {1'b0, cfa_bias_13}) : 9'd0;
 
-    // Clamp to valid range
-    wire [8:0] bias_02 = (adj_bias_02 < 0) ? 9'd0 : (adj_bias_02 > 255) ? 9'd255 : adj_bias_02[8:0];
-    wire [8:0] bias_13 = (adj_bias_13 < 0) ? 9'd0 : (adj_bias_13 > 255) ? 9'd255 : adj_bias_13[8:0];
-
+    // 1-bit path: uses CFA bias (for FAST_MONO)
     wire [8:0] a0 = {1'b0, pix0} + bias_02;
     wire [8:0] a1 = {1'b0, pix1} + bias_13;
     wire [8:0] a2 = {1'b0, pix2} + bias_02;
@@ -180,25 +225,112 @@ module bayer_dithering #(
     adder_sat adder_sat2 (a2[8:4], b2, c2);
     adder_sat adder_sat3 (a3[8:4], b3, c3);
 
-    // 1-bit output: just MSB (binary dithering)
+    // 2-bit path: CFA-aware bias for prettier colors (FAST_GREY)
+    // W subpixels slightly darker to add depth while preserving color visibility
+    // CFA pattern: Row0=B,W,B,W  Row1=G,R,G,R
+    // pix0,pix2 = B or G (color), pix1,pix3 = W or R
+    localparam W_DARKEN = 4'd0;  // Disabled for testing
+
+    // Color subpixels (B/G): no bias change
+    wire [8:0] a0_2b = {1'b0, pix0};
+    wire [8:0] a2_2b = {1'b0, pix2};
+
+    // W/R subpixels: darken W only (row 0), keep R natural (row 1)
+    // Clamp to 0 to avoid underflow
+    wire [7:0] pix1_dark = (pix1 > {4'd0, W_DARKEN}) ? (pix1 - {4'd0, W_DARKEN}) : 8'd0;
+    wire [7:0] pix3_dark = (pix3 > {4'd0, W_DARKEN}) ? (pix3 - {4'd0, W_DARKEN}) : 8'd0;
+    wire [8:0] a1_2b = (cfa_row == 1'b0) ? {1'b0, pix1_dark} : {1'b0, pix1};
+    wire [8:0] a3_2b = (cfa_row == 1'b0) ? {1'b0, pix3_dark} : {1'b0, pix3};
+
+    wire [3:0] c0_2b, c1_2b, c2_2b, c3_2b;
+    // Use 4x4 CFA-balanced Bayer (matches simulation bayer_dither_4level_edge_aware_no_simple)
+    adder_sat adder_sat0_2b (a0_2b[8:4], b0_4x4, c0_2b);
+    adder_sat adder_sat1_2b (a1_2b[8:4], b1_4x4, c1_2b);
+    adder_sat adder_sat2_2b (a2_2b[8:4], b2_4x4, c2_2b);
+    adder_sat adder_sat3_2b (a3_2b[8:4], b3_4x4, c3_2b);
+
+    // =========================================================================
+    // Grayscale Path for Sharp B/W Text (200dpi mode)
+    // Uses luminance for all subpixels instead of CFA color mixing
+    // Only activated for black text on white backgrounds
+    // =========================================================================
+
+    // Saturation detection: max - min across all 4 pixels
+    wire [7:0] max_01 = (pix0 > pix1) ? pix0 : pix1;
+    wire [7:0] max_23 = (pix2 > pix3) ? pix2 : pix3;
+    wire [7:0] max_all = (max_01 > max_23) ? max_01 : max_23;
+    wire [7:0] min_01 = (pix0 < pix1) ? pix0 : pix1;
+    wire [7:0] min_23 = (pix2 < pix3) ? pix2 : pix3;
+    wire [7:0] min_all = (min_01 < min_23) ? min_01 : min_23;
+    wire [7:0] saturation = max_all - min_all;
+    wire is_low_saturation = (saturation < 8'd30);
+
+    // Luminance approximation: average of all pixels
+    // (pix0 + pix1 + pix2 + pix3) / 4
+    wire [9:0] lum_sum = {2'b0, pix0} + {2'b0, pix1} + {2'b0, pix2} + {2'b0, pix3};
+    wire [7:0] luminance = lum_sum[9:2];  // Divide by 4
+
+    // W_LIGHTEN: Boost dark W pixels to reduce stroke weight on W columns
+    // Only applies to W subpixels (row 0, odd columns = pix1, pix3)
+    localparam [7:0] W_LIGHTEN = 8'd80;
+    wire [7:0] lum_for_w = (luminance < 8'd128) ?
+                           ((luminance + W_LIGHTEN > 8'd255) ? 8'd255 : luminance + W_LIGHTEN) :
+                           luminance;
+
+    // Grayscale dithering: use luminance for all subpixels
+    // But W subpixels use lightened luminance when dark
+    wire [8:0] a0_gray = {1'b0, luminance};
+    wire [8:0] a1_gray = (cfa_row == 1'b0) ? {1'b0, lum_for_w} : {1'b0, luminance};  // W gets lightened
+    wire [8:0] a2_gray = {1'b0, luminance};
+    wire [8:0] a3_gray = (cfa_row == 1'b0) ? {1'b0, lum_for_w} : {1'b0, luminance};  // W gets lightened
+
+    wire [3:0] c0_gray, c1_gray, c2_gray, c3_gray;
+    // Use 4x4 CFA-balanced Bayer (same as CFA path)
+    adder_sat adder_sat0_gray (a0_gray[8:4], b0_4x4, c0_gray);
+    adder_sat adder_sat1_gray (a1_gray[8:4], b1_4x4, c1_gray);
+    adder_sat adder_sat2_gray (a2_gray[8:4], b2_4x4, c2_gray);
+    adder_sat adder_sat3_gray (a3_gray[8:4], b3_4x4, c3_gray);
+
+    // Helper function to find max of two 8-bit values (used for local max detection)
+    function [7:0] max2;
+        input [7:0] a, b;
+        begin
+            max2 = (a > b) ? a : b;
+        end
+    endfunction
+
+    // Local max brightness detection (has_bright_side)
+    // Check if current pixel group or neighbors have any bright pixel (>245)
+    // This detects white backgrounds for sharp B/W text
+    wire [7:0] local_max_cur = max_all;  // Max of current 4 pixels
+    wire [7:0] local_max_prev = max2(max2(prev_pix0, prev_pix1), max2(prev_pix2, prev_pix3));
+    wire [7:0] local_max_up = max2(max2(prev2_line_pix0, prev2_line_pix1), max2(prev2_line_pix2, prev2_line_pix3));
+    wire [7:0] local_max_all = max2(max2(local_max_cur, local_max_prev), local_max_up);
+    wire has_bright_side = (local_max_all > 8'd245);
+
+    // Dark pixel check - only use grayscale for dark text (luminance < 150)
+    wire is_dark_pixel = (luminance < 8'd150);
+
+    // Per-pixel gradient check using existing edge detection
+    // Reuse max_grad_* which already computes gradient per pixel
+    localparam [7:0] GRAY_EDGE_THRESH = 8'd80;  // Edge threshold for grayscale path
+    wire is_edge_0 = (max_grad_0 > GRAY_EDGE_THRESH);
+    wire is_edge_1 = (max_grad_1 > GRAY_EDGE_THRESH);
+    wire is_edge_2 = (max_grad_2 > GRAY_EDGE_THRESH);
+    wire is_edge_3 = (max_grad_3 > GRAY_EDGE_THRESH);
+
+    // Use grayscale path when: edge + low saturation + bright background + dark pixel
+    // This targets black text on white backgrounds specifically
+    wire use_gray_0 = is_edge_0 & is_low_saturation & has_bright_side & is_dark_pixel;
+    wire use_gray_1 = is_edge_1 & is_low_saturation & has_bright_side & is_dark_pixel;
+    wire use_gray_2 = is_edge_2 & is_low_saturation & has_bright_side & is_dark_pixel;
+    wire use_gray_3 = is_edge_3 & is_low_saturation & has_bright_side & is_dark_pixel;
+
+    // 1-bit output: just MSB (binary dithering) - uses CFA bias
     wire [3:0] bayer_out_1b = {c0[3], c1[3], c2[3], c3[3]};
 
-    // 2-bit output: Scale down bayer offsets for 4-level mode
-    // For 4 levels, we want dithering within each level band, not across all levels
-    // Use halved bayer offsets (b/2) to preserve more contrast
-    wire [3:0] b0_half = {b0[3], b0[3:1]};  // Arithmetic shift right (sign extend)
-    wire [3:0] b1_half = {b1[3], b1[3:1]};
-    wire [3:0] b2_half = {b2[3], b2[3:1]};
-    wire [3:0] b3_half = {b3[3], b3[3:1]};
-
-    wire [3:0] c0_4lvl, c1_4lvl, c2_4lvl, c3_4lvl;
-    adder_sat adder_sat0_4lvl (a0[8:4], b0_half, c0_4lvl);
-    adder_sat adder_sat1_4lvl (a1[8:4], b1_half, c1_4lvl);
-    adder_sat adder_sat2_4lvl (a2[8:4], b2_half, c2_4lvl);
-    adder_sat adder_sat3_4lvl (a3[8:4], b3_half, c3_4lvl);
-
-    // 2-bit output: top 2 bits with reduced dithering
-    wire [7:0] bayer_out_2b = {c0_4lvl[3:2], c1_4lvl[3:2], c2_4lvl[3:2], c3_4lvl[3:2]};
+    // 2-bit output: top 2 bits (4-level dithering) - plain BIAS
+    wire [7:0] bayer_out_2b = {c0_2b[3:2], c1_2b[3:2], c2_2b[3:2], c3_2b[3:2]};
 
     // For backward compatibility, keep bayer_out as 1-bit
     wire [3:0] bayer_out = bayer_out_1b;
@@ -209,8 +341,14 @@ module bayer_dithering #(
 
     // 1-bit: MSB threshold
     wire [3:0] simple_out_1b = {pix0[7], pix1[7], pix2[7], pix3[7]};
-    // 2-bit: top 2 bits (4 levels)
-    wire [7:0] simple_out_2b = {pix0[7:6], pix1[7:6], pix2[7:6], pix3[7:6]};
+    // 2-bit: top 2 bits (4 levels) - apply W_DARKEN to W subpixels for consistency
+    wire [7:0] pix1_dark_simple = (pix1 > {4'd0, W_DARKEN}) ? (pix1 - {4'd0, W_DARKEN}) : 8'd0;
+    wire [7:0] pix3_dark_simple = (pix3 > {4'd0, W_DARKEN}) ? (pix3 - {4'd0, W_DARKEN}) : 8'd0;
+    wire [1:0] simple_02 = pix0[7:6];  // B or G - no darkening
+    wire [1:0] simple_13 = (cfa_row == 1'b0) ? pix1_dark_simple[7:6] : pix1[7:6];  // W darkened, R natural
+    wire [1:0] simple_22 = pix2[7:6];  // B or G - no darkening
+    wire [1:0] simple_33 = (cfa_row == 1'b0) ? pix3_dark_simple[7:6] : pix3[7:6];  // W darkened, R natural
+    wire [7:0] simple_out_2b = {simple_02, simple_13, simple_22, simple_33};
     // For backward compatibility
     wire [3:0] simple_out = simple_out_1b;
 
@@ -313,16 +451,9 @@ module bayer_dithering #(
     // =========================================================================
     // Maximum Gradient Calculation (for soft blending)
     // Find the maximum gradient across all directions for each pixel
+    // (uses max2 function defined earlier in grayscale section)
     // =========================================================================
-    
-    // Helper function to find max of two 8-bit values
-    function [7:0] max2;
-        input [7:0] a, b;
-        begin
-            max2 = (a > b) ? a : b;
-        end
-    endfunction
-    
+
     // Calculate max gradient for each pixel across all directions
     // pix0, pix1: have both upper-left and upper-right diagonals
     // pix2, pix3: only have upper-left diagonal (upper-right would need next group)
@@ -400,15 +531,17 @@ module bayer_dithering #(
         end
         else begin: gen_2bit_out
             // 2-bit per pixel = 8 bits total for 4 pixels
-            // Match 1-bit Bayer behavior exactly:
-            // - MSB = c[3] from 1-bit Bayer (decides white vs black)
-            // - LSB = c[2] from 4-level calc (decides gray level within half)
-            // When 1-bit says white (c[3]=1), output is 10 or 11
-            // When 1-bit says black (c[3]=0), output is 00 or 01
-            wire [1:0] out0 = {bayer_out_1b[3], c0_4lvl[2]};
-            wire [1:0] out1 = {bayer_out_1b[2], c1_4lvl[2]};
-            wire [1:0] out2 = {bayer_out_1b[1], c2_4lvl[2]};
-            wire [1:0] out3 = {bayer_out_1b[0], c3_4lvl[2]};
+            // Two paths (matches bayer_dither_4level_edge_aware_no_simple):
+            // 1. Grayscale (200dpi): for black text on white (edge + low sat + bright bg + dark pixel)
+            // 2. CFA Bayer dither: for everything else
+            wire [1:0] out0 = (pix0 >= 8'd250) ? 2'b11 : (pix0 <= 8'd5) ? 2'b00 :
+                              use_gray_0 ? c0_gray[3:2] : c0_2b[3:2];
+            wire [1:0] out1 = (pix1 >= 8'd250) ? 2'b11 : (pix1 <= 8'd5) ? 2'b00 :
+                              use_gray_1 ? c1_gray[3:2] : c1_2b[3:2];
+            wire [1:0] out2 = (pix2 >= 8'd250) ? 2'b11 : (pix2 <= 8'd5) ? 2'b00 :
+                              use_gray_2 ? c2_gray[3:2] : c2_2b[3:2];
+            wire [1:0] out3 = (pix3 >= 8'd250) ? 2'b11 : (pix3 <= 8'd5) ? 2'b00 :
+                              use_gray_3 ? c3_gray[3:2] : c3_2b[3:2];
             wire [7:0] final_out = {out0, out1, out2, out3};
 
             always @(posedge clk) begin
