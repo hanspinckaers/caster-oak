@@ -17,7 +17,8 @@ module pixel_processing(
     input  wire [5:0]  csr_lutframe,// Total frames in LUT
     input  wire [1:0]  csr_mindrv,  // Dynamic frame rate cap setting
     input  wire [3:0]  proc_p_or,   // Original pixel
-    input  wire [1:0]  proc_p_bd,   // Bayer dithered pixel to 2-bit (4-level)
+    input  wire        proc_p_bd_1b,// Bayer dithered pixel to 1-bit (FAST_MONO)
+    input  wire [1:0]  proc_p_bd_2b,// Bayer dithered pixel to 2-bit (FAST_GREY)
     input  wire        proc_p_n1,   // Blue noise dithered pixel to 1-bit
     input  wire [3:0]  proc_p_n4,   // Blue noise dithered pixel to 4-bit
     input  wire        proc_p_r2,   // R2 LDG dithered pixel to 1-bit
@@ -57,6 +58,7 @@ module pixel_processing(
     localparam FASTG_GREY_NEAR_FRAMES = 6'd2;  // 1-step grey (B↔DG, W↔LG, DG↔LG)
     localparam FASTG_GREY_FAR_FRAMES = 6'd5;   // 2-step grey (B→LG, W→DG)
     localparam FASTG_SETTLE_FRAMES = 6'd5;
+    localparam FASTG_OVERDRIVE_FRAMES = 6'd2;  // Overdrive opposite direction to unstick particles
 
     localparam AUTOLUT_HOLDOFF_FRAMES = 6'd60;
 
@@ -252,9 +254,9 @@ module pixel_processing(
     assign proc_p_li = {proc_p_or, 4'b0};
 
     wire [3:0] proc_vin = force_clear ? clear_color :
-        (pixel_basemode == BASEMODE_FAST_GREY) ? ({proc_p_bd, 2'b0}) :
+        (pixel_basemode == BASEMODE_FAST_GREY) ? ({proc_p_bd_2b, 2'b0}) :
         (pixel_dither == DITHER_NONE) ? (proc_p_or) :
-        (pixel_dither == DITHER_BAYER) ? ({4{proc_p_bd[1]}}) :
+        (pixel_dither == DITHER_BAYER) ? ({4{proc_p_bd_1b}}) :
         (pixel_dither == DITHER_BN_1BIT) ? ({4{proc_p_n1}}) :
         (pixel_dither == DITHER_BN_4BIT) ? (proc_p_n4) :
         (pixel_dither == DITHER_R2) ? ({4{proc_p_r2}}) : {4'd0};
@@ -276,6 +278,10 @@ module pixel_processing(
     wire fg_drive_dir = pixel_prev[2];
     wire fg_new_dir = proc_vin[3:2] > pixel_prev[1:0];
     wire fg_new_far = (proc_vin[3:2] ^ pixel_prev[1:0]) == 2'b10;
+    // Overdrive: for B/W targets, drive opposite direction first to unstick particles
+    wire fg_in_overdrive = (pixel_framecnt > (FASTM_B2W_FRAMES - FASTG_OVERDRIVE_FRAMES));
+    wire fg_use_overdrive = !fg_is_grey_target && fg_in_overdrive;
+    wire fg_actual_drive_dir = fg_use_overdrive ? !fg_drive_dir : fg_drive_dir;
 
     always @(*) begin
         // Normal mode, init mode override later
@@ -433,8 +439,8 @@ module pixel_processing(
                     ) : {proc_bi[15:12], STAGE_MONO, FASTM_W2B_FRAMES, fg_new_far, fg_new_dir, proc_vin[3:2]};
                 end
                 else begin
-                    // Drive based on stored direction (grey stops early)
-                    proc_output = fg_grey_done ? `NO_DRIVE : (fg_drive_dir ? `DRIVE_WHITE : `DRIVE_BLACK);
+                    // Drive based on stored direction (grey stops early, B/W gets overdrive)
+                    proc_output = fg_grey_done ? `NO_DRIVE : (fg_actual_drive_dir ? `DRIVE_WHITE : `DRIVE_BLACK);
                     if (pixel_framecnt == 0)
                         proc_bo = {proc_bi[15:12], STAGE_HOLD, FASTG_SETTLE_FRAMES, fg_is_far, fg_drive_dir, proc_vin[3:2]};
                     else
