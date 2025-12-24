@@ -32,7 +32,9 @@ module pixel_processing(
     input  wire [7:0]  op_param,    // External operation parameter
     input  wire [7:0]  op_framecnt, // Current overall frame counter for state
     input  wire [5:0]  al_framecnt, // Auto LUT mode frame counter
-    input  wire        neighbor_video // Neighbor pixel is in video mode (FAST_GREY)
+    input  wire        neighbor_video, // Neighbor pixel is in video mode (FAST_GREY)
+    input  wire        maint_trigger,  // Maintenance pulse trigger (every N frames)
+    input  wire        is_left_half    // Left half of screen (for A/B testing)
 );
 
     // Pixel state: 16bits
@@ -48,17 +50,33 @@ module pixel_processing(
     localparam MODE_AUTO_LUT_BLUE_NOISE = 4'd13; // 1101
     localparam MODE_FAST_MONO_R2 = 4'd14; // 1110 - R2 LDG dithering
 
-    localparam FASTM_B2W_FRAMES = 6'd7;      // MONO duration for all pixels
-    localparam FASTM_W2B_FRAMES = 6'd7;
+    localparam FASTM_B2W_FRAMES = 6'd10;     // MONO duration: 3 drive + 3 rest + 4 drive
+    localparam FASTM_W2B_FRAMES = 6'd10;
+    localparam FASTM_MID_REST_START = 4'd7;  // Rest at frames 7,6,5 (3 frames)
+    localparam FASTM_MID_REST_END = 4'd5;    // Resume drive at frame 4
 
-    // FAST_GREY timing (synchronized: B/W=7+5=12, Grey=7+2+3=12)
+    // FAST_GREY timing (synchronized: B/W=10+5=15, Grey=10+2+3=15)
     localparam FASTG_BW_REST_FRAMES = 6'd5;  // REST for B/W after MONO
     localparam FASTG_B2G_FRAMES = 6'd2;      // Reverse frames for grey (black side)
     localparam FASTG_W2G_FRAMES = 6'd2;      // Reverse frames for grey (white side)
     localparam FASTG_SETTLE_FRAMES = 6'd3;   // REST for grey after reverse
     localparam [3:0] FASTG_VIDEO_COOLDOWN = 4'd8; // Frames before counter decays (4-bit, max 15)
 
+    // White refresh pulse timing (asymmetric - push harder to white)
+    // BLACK(1) → WHITE(2) → REST(3) → WHITE(2) = 8 frames, net +3 white
+    localparam [3:0] WREFRESH_BLACK_FRAMES = 4'd1;
+    localparam [3:0] WREFRESH_WHITE1_FRAMES = 4'd2;
+    localparam [3:0] WREFRESH_REST_FRAMES = 4'd3;
+    localparam [3:0] WREFRESH_WHITE2_FRAMES = 4'd2;
+    // Total: 1+2+3+2 = 8 frames
+
     localparam AUTOLUT_HOLDOFF_FRAMES = 6'd60;
+
+    // Maintenance cycle timing (4-phase: reverse → mid_rest → return → settle)
+    localparam [3:0] MAINT_SETTLE_FRAMES = 4'd2;
+    localparam [3:0] MAINT_RETURN_FRAMES = 4'd2;
+    localparam [3:0] MAINT_MID_REST_FRAMES = 4'd2;
+    localparam [3:0] MAINT_REVERSE_FRAMES = 4'd2;
 
     wire [5:0] fastg_g2w_frames =
         (pixel_prev == 4'd0) ? 6'd9 : // Black to white
@@ -251,8 +269,13 @@ module pixel_processing(
     );*/
     assign proc_p_li = {proc_p_or, 4'b0};
 
+    // FAST_GREY: bypass dithering for pure black/white, only dither mid-tones
+    wire [1:0] fg_2b_input = (proc_p_or == 4'd0)  ? 2'b00 :  // Pure black
+                             (proc_p_or == 4'd15) ? 2'b11 :  // Pure white
+                             proc_p_bd_2b;                   // Dithered mid-tones
+
     wire [3:0] proc_vin = force_clear ? clear_color :
-        (pixel_basemode == BASEMODE_FAST_GREY) ? ({proc_p_bd_2b, 2'b0}) :
+        (pixel_basemode == BASEMODE_FAST_GREY) ? ({fg_2b_input, 2'b0}) :
         (pixel_dither == DITHER_NONE) ? (proc_p_or) :
         (pixel_dither == DITHER_BAYER) ? ({4{proc_p_bd_1b}}) :
         (pixel_dither == DITHER_BN_1BIT) ? ({4{proc_p_n1}}) :
@@ -283,6 +306,17 @@ module pixel_processing(
     wire [3:0] fg_frames_2b = FASTM_W2B_FRAMES[3:0] - fg_frames + 4'd1;
     // Video mode: 3+ changes within cooldown window, OR neighbor is in video mode
     wire fg_video_mode = (pixel_stage == STAGE_DONE) && ((fg_counter >= 2'd3) || neighbor_video);
+    // Detect grey→white transition (source is grey, target is white)
+    wire fg_grey_to_white = (pixel_prev[1] != pixel_prev[0]) && (proc_vin[3:2] == 2'b11);
+    // Check if maintenance flag is set (bits [3:2] of state in HOLD)
+    wire fg_needs_maint = (proc_bi[3:2] == 2'b11);
+    // Thresholds for STAGE_GREY drive phases
+    // Normal grey: reverse then rest
+    // Maintenance (fg_counter==0): reverse → mid_rest → return → settle (4 phases)
+    wire [3:0] fg_settle_threshold = (fg_counter == 0) ? MAINT_SETTLE_FRAMES : FASTG_SETTLE_FRAMES[3:0];
+    wire [3:0] fg_return_threshold = MAINT_RETURN_FRAMES + MAINT_SETTLE_FRAMES;
+    wire [3:0] fg_mid_rest_threshold = MAINT_MID_REST_FRAMES + MAINT_RETURN_FRAMES + MAINT_SETTLE_FRAMES;
+    wire [3:0] fg_reverse_threshold = MAINT_REVERSE_FRAMES + MAINT_MID_REST_FRAMES + MAINT_RETURN_FRAMES + MAINT_SETTLE_FRAMES;
 
     always @(*) begin
         // Normal mode, init mode override later
@@ -437,7 +471,14 @@ module pixel_processing(
 
             if (pixel_stage == STAGE_MONO) begin
                 // Drive towards binary target (MSB of grey level)
-                proc_output = pixel_prev[1] ? `DRIVE_WHITE : `DRIVE_BLACK;
+                // Add mid-rest: drive 3 frames, rest 3 frames, drive 4 frames
+                // Frames 10,9,8: drive | 7,6,5: rest | 4,3,2,1: drive
+                if ((fg_frames <= FASTM_MID_REST_START) && (fg_frames > FASTM_MID_REST_END)) begin
+                    proc_output = `NO_DRIVE;  // Mid-rest at frames 7,6,5
+                end
+                else begin
+                    proc_output = pixel_prev[1] ? `DRIVE_WHITE : `DRIVE_BLACK;
+                end
                 if ((proc_vin[3] != pixel_prev[1]) && (pixel_mindrv == 2'd0)) begin
                     // Binary direction changed mid-transition - restart with MONO target (video mode)
                     proc_bo = proc_vin[3] ? (
@@ -446,10 +487,12 @@ module pixel_processing(
                 end
                 else if (fg_frames == 0) begin
                     // MONO done - B/W goes to HOLD (REST), Grey goes to GREY (REVERSE)
+                    // For grey→white (marked by pixel_mindrv==2'b11), set maintenance flag
                     if (fg_is_grey_target)
                         proc_bo = {proc_bi[15:12], STAGE_GREY, fg_counter, FASTG_B2G_FRAMES[3:0] + FASTG_SETTLE_FRAMES[3:0], 2'b00, proc_vin[3:2]};
                     else
-                        proc_bo = {proc_bi[15:12], STAGE_HOLD, fg_counter, FASTG_BW_REST_FRAMES[3:0], 2'b00, proc_vin[3:2]};
+                        // bits[3:2] = maintenance flag (2'b11 if grey→white, from pixel_mindrv)
+                        proc_bo = {proc_bi[15:12], STAGE_HOLD, fg_counter, FASTG_BW_REST_FRAMES[3:0], pixel_mindrv, proc_vin[3:2]};
                 end
                 else begin
                     proc_bo = {proc_bi[15:12], STAGE_MONO, fg_counter, fg_frames_dec, pixel_mindrv_dec, proc_bi[1:0]};
@@ -465,19 +508,28 @@ module pixel_processing(
                     ) : {proc_bi[15:12], STAGE_MONO, fg_counter, FASTM_W2B_FRAMES[3:0], csr_mindrv, proc_vin_mono};
                 end
                 else if (fg_frames == 0) begin
-                    // Enter DONE: preserve counter, set cooldown timer
-                    proc_bo = {proc_bi[15:12], STAGE_DONE, fg_counter, FASTG_VIDEO_COOLDOWN, 2'b00, proc_vin[3:2]};
+                    // Check if needs white refresh (grey→white, fg_counter==2)
+                    if ((fg_counter == 2'd2) && (pixel_prev[1:0] == 2'b11)) begin
+                        // Enter white refresh before going to DONE (only ONCE)
+                        proc_bo = {proc_bi[15:12], STAGE_GREY, 2'd0,
+                            WREFRESH_BLACK_FRAMES + WREFRESH_WHITE1_FRAMES + WREFRESH_REST_FRAMES + WREFRESH_WHITE2_FRAMES,
+                            proc_bi[3:0]};
+                    end
+                    else begin
+                        // Enter DONE: preserve counter, set cooldown timer
+                        proc_bo = {proc_bi[15:12], STAGE_DONE, fg_counter, FASTG_VIDEO_COOLDOWN, 2'b00, proc_vin[3:2]};
+                    end
                 end
                 else begin
                     proc_bo = {proc_bi[15:12], STAGE_HOLD, fg_counter, fg_frames_dec, proc_bi[3:0]};
                 end
             end
             else if (pixel_stage == STAGE_GREY) begin
-                // REVERSE drive for grey targets, then REST
-                // pixel_prev[1]: 0=drove to black, 1=drove to white
-                // Reverse: if drove black, now drive white (and vice versa)
+                // Two modes:
+                // 1. Normal grey reversal (fg_counter != 0): reverse drive then rest
+                // 2. White refresh (fg_counter == 0): BLACK→WHITE→REST→WHITE push
                 if (proc_vin[3] != pixel_prev[1]) begin
-                    // Binary direction changed mid-grey - restart MONO with mono target (video mode)
+                    // Binary direction changed - restart MONO with mono target (video mode)
                     proc_output = `NO_DRIVE;
                     proc_bo = proc_vin[3] ? (
                         {proc_bi[15:12], STAGE_MONO, fg_counter, FASTM_B2W_FRAMES[3:0], csr_mindrv, proc_vin_mono}
@@ -488,7 +540,25 @@ module pixel_processing(
                     proc_output = `NO_DRIVE;
                     proc_bo = {proc_bi[15:12], STAGE_DONE, fg_counter, FASTG_VIDEO_COOLDOWN, 2'b00, proc_bi[1:0]};
                 end
+                else if (fg_counter == 0) begin
+                    // White refresh: BLACK(1) → WHITE(2) → REST(3) → WHITE(2)
+                    // Thresholds: >7=BLACK, >5=WHITE, >2=REST, <=2=WHITE
+                    if (fg_frames > (WREFRESH_WHITE1_FRAMES + WREFRESH_REST_FRAMES + WREFRESH_WHITE2_FRAMES)) begin
+                        proc_output = `DRIVE_BLACK;  // Frame 8
+                    end
+                    else if (fg_frames > (WREFRESH_REST_FRAMES + WREFRESH_WHITE2_FRAMES)) begin
+                        proc_output = `DRIVE_WHITE;  // Frames 7,6
+                    end
+                    else if (fg_frames > WREFRESH_WHITE2_FRAMES) begin
+                        proc_output = `NO_DRIVE;     // Frames 5,4,3
+                    end
+                    else begin
+                        proc_output = `DRIVE_WHITE;  // Frames 2,1
+                    end
+                    proc_bo = {proc_bi[15:12], STAGE_GREY, fg_counter, fg_frames_dec, proc_bi[3:0]};
+                end
                 else begin
+                    // Normal grey reversal: 2 phases (reverse drive, then rest)
                     if (fg_frames > FASTG_SETTLE_FRAMES[3:0]) begin
                         proc_output = pixel_prev[1] ? `DRIVE_BLACK : `DRIVE_WHITE;
                     end
@@ -516,8 +586,9 @@ module pixel_processing(
                     end
                     else begin
                         // Different side or B/W target: need full MONO
+                        // For grey→white, use fg_counter=2 to trigger white refresh ONCE
                         proc_bo = proc_vin[3] ? (
-                            {proc_bi[15:12], STAGE_MONO, fg_counter_inc, FASTM_B2W_FRAMES[3:0], csr_mindrv, proc_vin[3:2]}
+                            {proc_bi[15:12], STAGE_MONO, fg_grey_to_white ? 2'd2 : fg_counter_inc, FASTM_B2W_FRAMES[3:0], csr_mindrv, proc_vin[3:2]}
                         ) : {proc_bi[15:12], STAGE_MONO, fg_counter_inc, FASTM_W2B_FRAMES[3:0], csr_mindrv, proc_vin[3:2]};
                     end
                 end
