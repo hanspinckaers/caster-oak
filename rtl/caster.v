@@ -283,6 +283,15 @@ module caster(
     // Counters for auto LUT mode, free running
     reg [5:0] al_framecnt;
 
+    // =========================================================================
+    // Global Doping Scheduler
+    // Generates sparse doping events every 18 frames with 4-phase rotation
+    // =========================================================================
+    localparam DOPING_INTERVAL = 5'd18;  // 18 frames (~750ms at 24Hz)
+    reg [4:0] doping_counter;            // Counts 0-17
+    reg [1:0] global_phase;              // Phase rotation 0-3 for checkerboard pattern
+    reg doping_trigger;                  // Pulse at frame start when counter hits 0
+
     always @(posedge clk) begin
         case (scan_state)
         SCAN_IDLE: begin
@@ -315,6 +324,16 @@ module caster(
                 end
                 else begin
                     al_framecnt <= al_framecnt - 1;
+                end
+                // Update doping scheduler
+                if (doping_counter == 0) begin
+                    doping_counter <= DOPING_INTERVAL - 1;
+                    doping_trigger <= 1'b1;
+                    global_phase <= global_phase + 2'd1;  // Rotate 0→1→2→3→0
+                end
+                else begin
+                    doping_counter <= doping_counter - 1;
+                    doping_trigger <= 1'b0;
                 end
             end
             else begin
@@ -353,6 +372,9 @@ module caster(
             op_state <= `OP_INIT;
             op_framecnt <= OP_INIT_LENGTH;
             al_framecnt <= 0;
+            doping_counter <= 0;
+            doping_trigger <= 1'b0;
+            global_phase <= 2'd0;
         end
     end
 
@@ -804,6 +826,104 @@ module caster(
     assign neighbor_video[2] = cur_video_flags[1] | cur_video_flags[3] | prev_line_video_flags[2];
     assign neighbor_video[3] = cur_video_flags[2] | prev_line_video_flags[3];  // No right neighbor yet
 
+    // =========================================================================
+    // Edge Neighbor Detection
+    // Propagate edge flags (recent changes) to neighboring pixels for halo cleanup
+    // =========================================================================
+    localparam EDGE_RECENT_CHANGE = 4'd8;  // Frames to qualify as edge (~333ms at 24Hz)
+
+    // Extract edge flags from each pixel's state
+    // Edge condition: FAST_GREY mode + STAGE_DONE + fg_frames < 8
+    wire [3:0] cur_edge_flags;
+    generate
+        for (i = 0; i < 4; i = i + 1) begin: gen_edge_flags
+            wire [15:0] pix_state = s4_bi_pixel[i*16+:16];
+            wire is_fast_grey = (pix_state[15:12] == 4'b1011);
+            wire [1:0] fg_stage = pix_state[11:10];
+            wire [1:0] fg_counter = pix_state[9:8];
+            wire [3:0] fg_frames = pix_state[7:4];
+            // Edge flag: FAST_GREY + STAGE_DONE (2'd0) + fg_frames < 8
+            // When fg_counter != 0, pixel is in video mode, use high fg_frames to signal edge
+            assign cur_edge_flags[i] = is_fast_grey && (fg_stage == 2'd0) &&
+                                       ((fg_counter == 2'd0 && fg_frames < EDGE_RECENT_CHANGE) ||
+                                        (fg_counter != 2'd0));  // Video pixels count as edges
+        end
+    endgenerate
+
+    // Horizontal neighbor: previous 4-pixel group
+    reg [3:0] prev_edge_flags;
+    always @(posedge clk) begin
+        if (s4_active)
+            prev_edge_flags <= cur_edge_flags;
+    end
+
+    // Vertical neighbor: line buffer storing edge flags from previous line
+    (* ram_style = "distributed" *)
+    reg [3:0] edge_line_buffer [0:VIDEO_LINE_BUF_DEPTH-1];
+    wire [3:0] prev_line_edge_flags = edge_line_buffer[video_buf_addr];
+
+    always @(posedge clk) begin
+        if (s4_active)
+            edge_line_buffer[video_buf_addr] <= cur_edge_flags;
+    end
+
+    // Compute neighbor_edge for each pixel
+    wire [3:0] neighbor_edge;
+    assign neighbor_edge[0] = prev_edge_flags[3] | cur_edge_flags[1] | prev_line_edge_flags[0];
+    assign neighbor_edge[1] = cur_edge_flags[0] | cur_edge_flags[2] | prev_line_edge_flags[1];
+    assign neighbor_edge[2] = cur_edge_flags[1] | cur_edge_flags[3] | prev_line_edge_flags[2];
+    assign neighbor_edge[3] = cur_edge_flags[2] | prev_line_edge_flags[3];
+
+    // =========================================================================
+    // Neighbor Opposite Detection
+    // Detect if neighboring pixels have opposite black/white targets for halo
+    // =========================================================================
+
+    // Extract target B/W from each pixel (bit 3 of state: 1=white, 0=black)
+    wire [3:0] cur_targets;
+    generate
+        for (i = 0; i < 4; i = i + 1) begin: gen_targets
+            assign cur_targets[i] = s4_bi_pixel[i*16+3];
+        end
+    endgenerate
+
+    // Horizontal neighbor targets
+    reg [3:0] prev_targets;
+    always @(posedge clk) begin
+        if (s4_active)
+            prev_targets <= cur_targets;
+    end
+
+    // Vertical neighbor targets: line buffer
+    (* ram_style = "distributed" *)
+    reg [3:0] target_line_buffer [0:VIDEO_LINE_BUF_DEPTH-1];
+    wire [3:0] prev_line_targets = target_line_buffer[video_buf_addr];
+
+    always @(posedge clk) begin
+        if (s4_active)
+            target_line_buffer[video_buf_addr] <= cur_targets;
+    end
+
+    // Compute neighbor_opposite: true if any neighbor has opposite target
+    wire [3:0] neighbor_opposite;
+    assign neighbor_opposite[0] = (cur_targets[0] != prev_targets[3]) |
+                                   (cur_targets[0] != cur_targets[1]) |
+                                   (cur_targets[0] != prev_line_targets[0]);
+    assign neighbor_opposite[1] = (cur_targets[1] != cur_targets[0]) |
+                                   (cur_targets[1] != cur_targets[2]) |
+                                   (cur_targets[1] != prev_line_targets[1]);
+    assign neighbor_opposite[2] = (cur_targets[2] != cur_targets[1]) |
+                                   (cur_targets[2] != cur_targets[3]) |
+                                   (cur_targets[2] != prev_line_targets[2]);
+    assign neighbor_opposite[3] = (cur_targets[3] != cur_targets[2]) |
+                                   (cur_targets[3] != prev_line_targets[3]);
+
+    // =========================================================================
+    // Pixel Position (for sparse doping pattern)
+    // =========================================================================
+    wire [11:0] pix_x_base = {1'b0, h_cnt_offset[10:0]};
+    wire [11:0] pix_y = {1'b0, v_cnt_offset[10:0]};
+
     wire [7:0] pixel_comb;
     wire [63:0] bo_pixel_comb;
     generate
@@ -818,6 +938,9 @@ module caster(
             wire [15:0] proc_bo;
             wire [1:0] proc_lut_rd = s4_lut_rd[i*2+:2];
             wire [1:0] proc_output;
+
+            // Per-pixel X position (each pixel in group has offset)
+            wire [11:0] proc_x_pos = pix_x_base + {{10{1'b0}}, i[1:0]};
 
             pixel_processing pixel_processing(
                 .csr_lutframe(csr_lut_frame),
@@ -838,7 +961,14 @@ module caster(
                 .op_param(op_param),
                 .op_framecnt(op_framecnt),
                 .al_framecnt(al_framecnt),
-                .neighbor_video(neighbor_video[i])
+                .neighbor_video(neighbor_video[i]),
+                // Doping system inputs
+                .neighbor_edge(neighbor_edge[i]),
+                .neighbor_opposite(neighbor_opposite[i]),
+                .x_pos(proc_x_pos),
+                .y_pos(pix_y),
+                .doping_trigger(doping_trigger),
+                .global_phase(global_phase)
             );
 
             // Output
