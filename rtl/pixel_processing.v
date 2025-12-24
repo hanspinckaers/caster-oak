@@ -54,12 +54,12 @@ module pixel_processing(
     localparam MODE_AUTO_LUT_BLUE_NOISE = 4'd13; // 1101
     localparam MODE_FAST_MONO_R2 = 4'd14; // 1110 - R2 LDG dithering
 
-    localparam FASTM_B2W_FRAMES = 6'd10;     // MONO duration: 3 drive + 3 rest + 4 drive
-    localparam FASTM_W2B_FRAMES = 6'd10;
-    localparam FASTM_MID_REST_START = 4'd7;  // Rest at frames 7,6,5 (3 frames)
-    localparam FASTM_MID_REST_END = 4'd5;    // Resume drive at frame 4
+    localparam FASTM_B2W_FRAMES = 6'd8;      // MONO duration: 3 drive + 1 rest + 4 drive
+    localparam FASTM_W2B_FRAMES = 6'd8;
+    localparam FASTM_MID_REST_START = 4'd5;  // Rest at frame 5 only (1 frame)
+    localparam FASTM_MID_REST_END = 4'd4;    // Resume drive at frame 4
 
-    // FAST_GREY timing (synchronized: B/W=10+5=15, Grey=10+2+3=15)
+    // FAST_GREY timing (B/W=8+5=13, Grey=8+2+3=13)
     localparam FASTG_BW_REST_FRAMES = 6'd5;  // REST for B/W after MONO
     localparam FASTG_B2G_FRAMES = 6'd2;      // Reverse frames for grey (black side)
     localparam FASTG_W2G_FRAMES = 6'd2;      // Reverse frames for grey (white side)
