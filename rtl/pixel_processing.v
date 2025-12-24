@@ -32,9 +32,7 @@ module pixel_processing(
     input  wire [7:0]  op_param,    // External operation parameter
     input  wire [7:0]  op_framecnt, // Current overall frame counter for state
     input  wire [5:0]  al_framecnt, // Auto LUT mode frame counter
-    input  wire        neighbor_video, // Neighbor pixel is in video mode (FAST_GREY)
-    input  wire        maint_trigger,  // Maintenance pulse trigger (every N frames)
-    input  wire        is_left_half    // Left half of screen (for A/B testing)
+    input  wire        neighbor_video  // Neighbor pixel is in video mode (FAST_GREY)
 );
 
     // Pixel state: 16bits
@@ -50,33 +48,28 @@ module pixel_processing(
     localparam MODE_AUTO_LUT_BLUE_NOISE = 4'd13; // 1101
     localparam MODE_FAST_MONO_R2 = 4'd14; // 1110 - R2 LDG dithering
 
-    localparam FASTM_B2W_FRAMES = 6'd10;     // MONO duration: 3 drive + 3 rest + 4 drive
-    localparam FASTM_W2B_FRAMES = 6'd10;
-    localparam FASTM_MID_REST_START = 4'd7;  // Rest at frames 7,6,5 (3 frames)
-    localparam FASTM_MID_REST_END = 4'd5;    // Resume drive at frame 4
+    localparam FASTM_B2W_FRAMES = 6'd8;      // MONO duration: 3 drive + 1 rest + 4 drive
+    localparam FASTM_W2B_FRAMES = 6'd8;
+    localparam FASTM_MID_REST_START = 4'd5;  // Rest at frame 5 only (1 frame)
+    localparam FASTM_MID_REST_END = 4'd4;    // Resume drive at frame 4
 
-    // FAST_GREY timing (synchronized: B/W=10+5=15, Grey=10+2+3=15)
+    // FAST_GREY timing (B/W=8+5=13, Grey=8+2+3=13)
     localparam FASTG_BW_REST_FRAMES = 6'd5;  // REST for B/W after MONO
     localparam FASTG_B2G_FRAMES = 6'd2;      // Reverse frames for grey (black side)
     localparam FASTG_W2G_FRAMES = 6'd2;      // Reverse frames for grey (white side)
     localparam FASTG_SETTLE_FRAMES = 6'd3;   // REST for grey after reverse
     localparam [3:0] FASTG_VIDEO_COOLDOWN = 4'd8; // Frames before counter decays (4-bit, max 15)
 
-    // White refresh pulse timing (asymmetric - push harder to white)
-    // BLACK(1) → WHITE(2) → REST(3) → WHITE(2) = 8 frames, net +3 white
-    localparam [3:0] WREFRESH_BLACK_FRAMES = 4'd1;
-    localparam [3:0] WREFRESH_WHITE1_FRAMES = 4'd2;
-    localparam [3:0] WREFRESH_REST_FRAMES = 4'd3;
-    localparam [3:0] WREFRESH_WHITE2_FRAMES = 4'd2;
-    // Total: 1+2+3+2 = 8 frames
+    // White refresh: micro-jiggle (AC waveform, net zero DC)
+    localparam [5:0] WREFRESH_DELAY_FRAMES = 6'd60;     // ~1 second delay before first pulse
+    localparam [5:0] WREFRESH_DELAY2_FRAMES = 6'd30;    // ~0.5 second between pulses
+    // Micro-jiggle: B(1)→W(1)→B(1)→W(1)→B(1)→W(1)→REST(2) = 8 frames, net 0 DC
+    // 3 cycles of BLACK-WHITE alternation
+    localparam [3:0] WREFRESH_CYCLES = 4'd3;            // Number of B-W cycles
+    localparam [3:0] WREFRESH_POST_REST_FRAMES = 4'd2;  // Final settle
+    // Total per pulse: 3*2 + 2 = 8 frames
 
     localparam AUTOLUT_HOLDOFF_FRAMES = 6'd60;
-
-    // Maintenance cycle timing (4-phase: reverse → mid_rest → return → settle)
-    localparam [3:0] MAINT_SETTLE_FRAMES = 4'd2;
-    localparam [3:0] MAINT_RETURN_FRAMES = 4'd2;
-    localparam [3:0] MAINT_MID_REST_FRAMES = 4'd2;
-    localparam [3:0] MAINT_REVERSE_FRAMES = 4'd2;
 
     wire [5:0] fastg_g2w_frames =
         (pixel_prev == 4'd0) ? 6'd9 : // Black to white
@@ -306,17 +299,8 @@ module pixel_processing(
     wire [3:0] fg_frames_2b = FASTM_W2B_FRAMES[3:0] - fg_frames + 4'd1;
     // Video mode: 3+ changes within cooldown window, OR neighbor is in video mode
     wire fg_video_mode = (pixel_stage == STAGE_DONE) && ((fg_counter >= 2'd3) || neighbor_video);
-    // Detect grey→white transition (source is grey, target is white)
-    wire fg_grey_to_white = (pixel_prev[1] != pixel_prev[0]) && (proc_vin[3:2] == 2'b11);
-    // Check if maintenance flag is set (bits [3:2] of state in HOLD)
-    wire fg_needs_maint = (proc_bi[3:2] == 2'b11);
-    // Thresholds for STAGE_GREY drive phases
-    // Normal grey: reverse then rest
-    // Maintenance (fg_counter==0): reverse → mid_rest → return → settle (4 phases)
-    wire [3:0] fg_settle_threshold = (fg_counter == 0) ? MAINT_SETTLE_FRAMES : FASTG_SETTLE_FRAMES[3:0];
-    wire [3:0] fg_return_threshold = MAINT_RETURN_FRAMES + MAINT_SETTLE_FRAMES;
-    wire [3:0] fg_mid_rest_threshold = MAINT_MID_REST_FRAMES + MAINT_RETURN_FRAMES + MAINT_SETTLE_FRAMES;
-    wire [3:0] fg_reverse_threshold = MAINT_REVERSE_FRAMES + MAINT_MID_REST_FRAMES + MAINT_RETURN_FRAMES + MAINT_SETTLE_FRAMES;
+    // Detect any transition TO white (from black or grey, not from white)
+    wire fg_to_white = (pixel_prev[1:0] != 2'b11) && (proc_vin[3:2] == 2'b11);
 
     always @(*) begin
         // Normal mode, init mode override later
@@ -508,12 +492,11 @@ module pixel_processing(
                     ) : {proc_bi[15:12], STAGE_MONO, fg_counter, FASTM_W2B_FRAMES[3:0], csr_mindrv, proc_vin_mono};
                 end
                 else if (fg_frames == 0) begin
-                    // Check if needs white refresh (grey→white, fg_counter==2)
+                    // Check if needs white refresh (any→white, fg_counter==2)
                     if ((fg_counter == 2'd2) && (pixel_prev[1:0] == 2'b11)) begin
-                        // Enter white refresh before going to DONE (only ONCE)
-                        proc_bo = {proc_bi[15:12], STAGE_GREY, 2'd0,
-                            WREFRESH_BLACK_FRAMES + WREFRESH_WHITE1_FRAMES + WREFRESH_REST_FRAMES + WREFRESH_WHITE2_FRAMES,
-                            proc_bi[3:0]};
+                        // Enter DONE with white refresh pending: ~1 sec delay first
+                        // Use full 6-bit framecnt for delay, marker [3:2]=2'b10
+                        proc_bo = {proc_bi[15:12], STAGE_DONE, WREFRESH_DELAY_FRAMES, 2'b10, proc_vin[3:2]};
                     end
                     else begin
                         // Enter DONE: preserve counter, set cooldown timer
@@ -541,21 +524,35 @@ module pixel_processing(
                     proc_bo = {proc_bi[15:12], STAGE_DONE, fg_counter, FASTG_VIDEO_COOLDOWN, 2'b00, proc_bi[1:0]};
                 end
                 else if (fg_counter == 0) begin
-                    // White refresh: BLACK(1) → WHITE(2) → REST(3) → WHITE(2)
-                    // Thresholds: >7=BLACK, >5=WHITE, >2=REST, <=2=WHITE
-                    if (fg_frames > (WREFRESH_WHITE1_FRAMES + WREFRESH_REST_FRAMES + WREFRESH_WHITE2_FRAMES)) begin
-                        proc_output = `DRIVE_BLACK;  // Frame 8
-                    end
-                    else if (fg_frames > (WREFRESH_REST_FRAMES + WREFRESH_WHITE2_FRAMES)) begin
-                        proc_output = `DRIVE_WHITE;  // Frames 7,6
-                    end
-                    else if (fg_frames > WREFRESH_WHITE2_FRAMES) begin
-                        proc_output = `NO_DRIVE;     // Frames 5,4,3
+                    // Micro-jiggle: B(1)→W(1)→B(1)→W(1)→B(1)→W(1)→REST(2)
+                    // Alternating BLACK/WHITE for net zero DC, then rest
+                    // pixel_prev[3:2]: 2'b10=first pulse, 2'b11=second pulse
+                    if (fg_frames > WREFRESH_POST_REST_FRAMES) begin
+                        // In jiggle phase - alternate BLACK/WHITE each frame
+                        // Even offset from end = BLACK, odd offset = WHITE
+                        if (fg_frames[0] == 1'b0)
+                            proc_output = `DRIVE_BLACK;
+                        else
+                            proc_output = `DRIVE_WHITE;
                     end
                     else begin
-                        proc_output = `DRIVE_WHITE;  // Frames 2,1
+                        proc_output = `NO_DRIVE;     // Final rest
                     end
-                    proc_bo = {proc_bi[15:12], STAGE_GREY, fg_counter, fg_frames_dec, proc_bi[3:0]};
+
+                    if (fg_frames == 4'd1) begin
+                        // Pulse finishing - check if need second pulse
+                        if (pixel_prev[3:2] == 2'b10) begin
+                            // First pulse done - schedule second with shorter delay
+                            proc_bo = {proc_bi[15:12], STAGE_DONE, WREFRESH_DELAY2_FRAMES, 2'b11, pixel_prev[1:0]};
+                        end
+                        else begin
+                            // Second pulse done - go to normal DONE
+                            proc_bo = {proc_bi[15:12], STAGE_DONE, 2'd0, FASTG_VIDEO_COOLDOWN, 2'b00, pixel_prev[1:0]};
+                        end
+                    end
+                    else begin
+                        proc_bo = {proc_bi[15:12], STAGE_GREY, fg_counter, fg_frames_dec, proc_bi[3:0]};
+                    end
                 end
                 else begin
                     // Normal grey reversal: 2 phases (reverse drive, then rest)
@@ -569,15 +566,40 @@ module pixel_processing(
                 end
             end
             else if (pixel_stage == STAGE_DONE) begin
-                // fg_counter = video change counter (0-3)
-                // fg_frames = cooldown timer
-                if (proc_vin[3:2] != pixel_prev[1:0]) begin
+                // Three modes based on pixel_prev[3:2]:
+                // - 2'b10: First white refresh pulse pending
+                // - 2'b11: Second white refresh pulse pending
+                // - Other: Normal mode (fg_counter in [5:4], fg_frames in [3:0])
+                if (pixel_prev[3:2] == 2'b10 || pixel_prev[3:2] == 2'b11) begin
+                    // White refresh pending mode - waiting before pulse
+                    proc_output = `NO_DRIVE;
+                    if (proc_vin[3:2] != pixel_prev[1:0]) begin
+                        // Target changed - cancel refresh and start new transition
+                        proc_bo = proc_vin[3] ? (
+                            {proc_bi[15:12], STAGE_MONO, fg_to_white ? 2'd2 : 2'd1, FASTM_B2W_FRAMES[3:0], csr_mindrv, proc_vin[3:2]}
+                        ) : {proc_bi[15:12], STAGE_MONO, 2'd1, FASTM_W2B_FRAMES[3:0], csr_mindrv, proc_vin[3:2]};
+                    end
+                    else if (pixel_framecnt == 0) begin
+                        // Delay expired - enter GREY for micro-jiggle pulse
+                        // Keep marker to know which pulse this is
+                        // Total frames: CYCLES*2 + POST_REST = 3*2 + 2 = 8
+                        proc_bo = {proc_bi[15:12], STAGE_GREY, 2'd0,
+                            (WREFRESH_CYCLES << 1) + WREFRESH_POST_REST_FRAMES,
+                            proc_bi[3:0]};
+                    end
+                    else begin
+                        // Still waiting - decrement full 6-bit counter
+                        proc_bo = {proc_bi[15:12], STAGE_DONE, pixel_framecnt_dec, proc_bi[3:0]};
+                    end
+                end
+                else if (proc_vin[3:2] != pixel_prev[1:0]) begin
                     // Target changed - increment counter and start transition
                     proc_output = `NO_DRIVE;
                     // Video mode: 3+ changes within cooldown window, force mono
+                    // Still set white refresh marker (2'd2) when going to white
                     if (fg_video_mode) begin
                         proc_bo = proc_vin[3] ? (
-                            {proc_bi[15:12], STAGE_MONO, fg_counter, FASTM_B2W_FRAMES[3:0], csr_mindrv, proc_vin_mono}
+                            {proc_bi[15:12], STAGE_MONO, 2'd2, FASTM_B2W_FRAMES[3:0], csr_mindrv, proc_vin_mono}
                         ) : {proc_bi[15:12], STAGE_MONO, fg_counter, FASTM_W2B_FRAMES[3:0], csr_mindrv, proc_vin_mono};
                     end
                     // Same-side grey transition (W→LG or B→DG): skip MONO
@@ -586,9 +608,9 @@ module pixel_processing(
                     end
                     else begin
                         // Different side or B/W target: need full MONO
-                        // For grey→white, use fg_counter=2 to trigger white refresh ONCE
+                        // For any→white, use fg_counter=2 to trigger white refresh ONCE
                         proc_bo = proc_vin[3] ? (
-                            {proc_bi[15:12], STAGE_MONO, fg_grey_to_white ? 2'd2 : fg_counter_inc, FASTM_B2W_FRAMES[3:0], csr_mindrv, proc_vin[3:2]}
+                            {proc_bi[15:12], STAGE_MONO, fg_to_white ? 2'd2 : fg_counter_inc, FASTM_B2W_FRAMES[3:0], csr_mindrv, proc_vin[3:2]}
                         ) : {proc_bi[15:12], STAGE_MONO, fg_counter_inc, FASTM_W2B_FRAMES[3:0], csr_mindrv, proc_vin[3:2]};
                     end
                 end
