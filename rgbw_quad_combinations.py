@@ -20,18 +20,38 @@ K_W = 1.00
 GRAY_LEVELS = {'B': 0, 'DG': 85, 'LG': 170, 'W': 255}
 FILTERS = ['B', 'W', 'G', 'R']  # CFA quad positions
 
+def linear_to_srgb(linear):
+    """Convert linear RGB (0-1) to sRGB (0-1) with gamma correction."""
+    if linear <= 0.0031308:
+        return linear * 12.92
+    else:
+        return 1.055 * (linear ** (1/2.4)) - 0.055
+
 def gray_to_rgb(gray_level, filter_type):
-    """Calculate RGB for gray level behind filter."""
+    """
+    Calculate RGB for gray level behind CFA filter (reflective display).
+    Applies gamma correction for proper screen display.
+    """
+    # Reflectance is linear (0-1)
     reflectance = gray_level / 255.0
+
+    # Calculate linear RGB based on filter transmission
     if filter_type == 'B':
-        return (0, 0, int(reflectance * K_B * 255))
+        r_lin, g_lin, b_lin = 0.0, 0.0, reflectance * K_B
     elif filter_type == 'G':
-        return (0, int(reflectance * K_G * 255), 0)
+        r_lin, g_lin, b_lin = 0.0, reflectance * K_G, 0.0
     elif filter_type == 'R':
-        return (int(reflectance * K_R * 255), 0, 0)
+        r_lin, g_lin, b_lin = reflectance * K_R, 0.0, 0.0
     elif filter_type == 'W':
-        lum = int(reflectance * K_W * 255)
-        return (lum, lum, lum)
+        lum = reflectance * K_W
+        r_lin, g_lin, b_lin = lum, lum, lum
+
+    # Apply gamma correction for proper screen display
+    r_srgb = linear_to_srgb(r_lin)
+    g_srgb = linear_to_srgb(g_lin)
+    b_srgb = linear_to_srgb(b_lin)
+
+    return (int(r_srgb * 255), int(g_srgb * 255), int(b_srgb * 255))
 
 def quad_to_color(gray_levels):
     """
