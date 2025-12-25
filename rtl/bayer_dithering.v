@@ -288,36 +288,131 @@ module bayer_dithering #(
     adder_sat adder_sat3 (a3[8:4], b3, c3);
 
     // =========================================================================
-    // Independent Per-Channel Dithering for 2-bit Path (FAST_GREY)
+    // Filter-Compensated Vector Dithering for 2-bit RGBW (FAST_GREY)
     //
-    // Each CFA subpixel (R, G, B, W) dithers independently to 4 gray levels.
-    // This exploits the full combinatorial palette:
-    //   - 4 subpixels × 4 gray levels (B/DG/LG/W) = 256 combinations per CFA quad
-    //   - 8×8 spatial dithering expands effective color depth further
-    //   - Different gray levels behind CFA filters = saturation/brightness control
+    // Exploits gray-behind-CFA physics:
+    //   - Blue filter + B/DG/LG/W gray = 4 different "blues" (varying sat/lum)
+    //   - Same for Green, Red, White filters
+    //   - Total palette: 16 base colors × spatial dithering = thousands of colors
     //
-    // Current mode (Y8 grayscale input):
-    //   - Each subpixel uses its pixel's Y8 value as target
-    //   - Independent dithering creates full palette exploration
+    // Algorithm (for grayscale Y8 input):
+    //   1. Compensate each subpixel for its filter transmission
+    //      - Dim filters (B) need brighter grays to match target luminance
+    //      - Bright filters (W) need darker grays
+    //   2. Balance total luminance across 4-subpixel group
+    //   3. Dither each channel independently to 2-bit
     //
-    // Future extension (RGB color input):
-    //   - Convert RGB → RGBW (e.g., W=min(R,G,B), subtract W from RGB)
-    //   - Each channel independently dithers to 2-bit
-    //   - Leverages gray-behind-CFA for true color saturation control
+    // Result: Neutral grayscale with maximum use of available palette
+    // Future: RGB input maps to RGBW, creating full color reproduction
     // =========================================================================
 
-    // Each pixel dithers independently using its Y8 value
-    // (All subpixels aim for same luminance, but dither independently)
-    wire [7:0] target0_indep = pix0;  // B or G subpixel
-    wire [7:0] target1_indep = pix1;  // W or R subpixel
-    wire [7:0] target2_indep = pix2;  // B or G subpixel
-    wire [7:0] target3_indep = pix3;  // W or R subpixel
+    // Filter transmission coefficients (scaled by 256)
+    // These represent how much light passes through each filter
+    localparam [7:0] K_B = 8'd26;   // Blue: 0.10 × 256 (very dim)
+    localparam [7:0] K_G = 8'd154;  // Green: 0.60 × 256 (medium)
+    localparam [7:0] K_R = 8'd77;   // Red: 0.30 × 256 (dimmer)
+    localparam [7:0] K_W = 8'd256;  // White: 1.00 × 256 (special case, full brightness)
 
-    // Apply 8×8 Bayer dithering independently to each subpixel
-    wire [8:0] a0_indep = {1'b0, target0_indep};
-    wire [8:0] a1_indep = {1'b0, target1_indep};
-    wire [8:0] a2_indep = {1'b0, target2_indep};
-    wire [8:0] a3_indep = {1'b0, target3_indep};
+    // Step 1: Filter compensation
+    // To achieve neutral gray at luminance Y, each subpixel needs different gray level
+    // Perceived_luminance = gray_level × filter_transmission
+    // Therefore: gray_level = Y / filter_transmission
+    //
+    // Use square root compensation to avoid excessive saturation:
+    // gray_level ≈ Y × sqrt(1/k) = Y / sqrt(k)
+    // This gives partial compensation with better headroom
+
+    // Sqrt inverse approximations (×256 for fixed point)
+    // sqrt(1/0.10) ≈ 3.16 → 809
+    // sqrt(1/0.60) ≈ 1.29 → 330
+    // sqrt(1/0.30) ≈ 1.83 → 468
+    // sqrt(1/1.00) = 1.00 → 256
+    localparam [15:0] SQRT_INV_K_B = 16'd809;   // Strong compensation for blue
+    localparam [15:0] SQRT_INV_K_G = 16'd330;   // Mild compensation for green
+    localparam [15:0] SQRT_INV_K_R = 16'd468;   // Medium compensation for red
+    localparam [15:0] SQRT_INV_K_W = 16'd256;   // No compensation for white
+
+    // Compute compensated targets per pixel based on CFA position
+    // Row 0: B(even), W(odd)  |  Row 1: G(even), R(odd)
+
+    // Multiply Y8 × sqrt_inv_k (both scaled by 256, so result >> 8)
+    wire [15:0] comp0_raw = (cfa_row == 1'b0) ?
+                            (pix0 * SQRT_INV_K_B[9:2]) :  // Blue compensation
+                            (pix0 * SQRT_INV_K_G[9:2]);   // Green compensation
+    wire [15:0] comp1_raw = (cfa_row == 1'b0) ?
+                            (pix1 * SQRT_INV_K_W[9:2]) :  // White (none)
+                            (pix1 * SQRT_INV_K_R[9:2]);   // Red compensation
+    wire [15:0] comp2_raw = (cfa_row == 1'b0) ?
+                            (pix2 * SQRT_INV_K_B[9:2]) :  // Blue
+                            (pix2 * SQRT_INV_K_G[9:2]);   // Green
+    wire [15:0] comp3_raw = (cfa_row == 1'b0) ?
+                            (pix3 * SQRT_INV_K_W[9:2]) :  // White
+                            (pix3 * SQRT_INV_K_R[9:2]);   // Red
+
+    // Saturate at 255
+    wire [7:0] target0_comp = (comp0_raw[15:8] != 0) ? 8'd255 : comp0_raw[7:0];
+    wire [7:0] target1_comp = (comp1_raw[15:8] != 0) ? 8'd255 : comp1_raw[7:0];
+    wire [7:0] target2_comp = (comp2_raw[15:8] != 0) ? 8'd255 : comp2_raw[7:0];
+    wire [7:0] target3_comp = (comp3_raw[15:8] != 0) ? 8'd255 : comp3_raw[7:0];
+
+    // Step 2: Luminance balancing
+    // Check if total perceived luminance matches target
+    // Y_perceived = (k0×g0 + k1×g1 + k2×g2 + k3×g3) / (k0+k1+k2+k3)
+
+    wire [7:0] k0 = (cfa_row == 1'b0) ? K_B : K_G;
+    wire [7:0] k1 = (cfa_row == 1'b0) ? K_W : K_R;
+    wire [7:0] k2 = (cfa_row == 1'b0) ? K_B : K_G;
+    wire [7:0] k3 = (cfa_row == 1'b0) ? K_W : K_R;
+
+    // Weighted contributions (16-bit products)
+    wire [15:0] lum0 = target0_comp * k0;  // Y × k
+    wire [15:0] lum1 = target1_comp * k1;
+    wire [15:0] lum2 = target2_comp * k2;
+    wire [15:0] lum3 = target3_comp * k3;
+    wire [17:0] lum_total = {2'b0, lum0} + {2'b0, lum1} + {2'b0, lum2} + {2'b0, lum3};
+
+    // Target luminance: average of input pixels
+    wire [9:0] target_lum_sum = {2'b0, pix0} + {2'b0, pix1} + {2'b0, pix2} + {2'b0, pix3};
+    wire [7:0] target_lum_avg = target_lum_sum[9:2];  // ÷4
+
+    // Current perceived average (divide by 4, account for k scaling)
+    // lum_total is sum of (Y×k), need to divide by (sum of k) ≈ 512, then by 4
+    // lum_total >> 10 gives average Y
+    wire [7:0] current_lum_avg = lum_total[17:10];
+
+    // Error signal (signed)
+    wire signed [8:0] lum_error = {1'b0, target_lum_avg} - {1'b0, current_lum_avg};
+
+    // Apply correction globally (scale and distribute)
+    wire signed [9:0] correction = lum_error <<< 1;  // ×2 for stronger correction
+
+    // Saturating signed add
+    function [7:0] apply_correction;
+        input [7:0] value;
+        input signed [9:0] corr;
+        reg signed [9:0] result;
+        begin
+            result = $signed({2'b0, value}) + corr;
+            if (result < 0)
+                apply_correction = 8'd0;
+            else if (result > 255)
+                apply_correction = 8'd255;
+            else
+                apply_correction = result[7:0];
+        end
+    endfunction
+
+    // Final balanced targets
+    wire [7:0] target0_final = apply_correction(target0_comp, correction);
+    wire [7:0] target1_final = apply_correction(target1_comp, correction);
+    wire [7:0] target2_final = apply_correction(target2_comp, correction);
+    wire [7:0] target3_final = apply_correction(target3_comp, correction);
+
+    // Step 3: Independent dithering to 2-bit per channel
+    wire [8:0] a0_indep = {1'b0, target0_final};
+    wire [8:0] a1_indep = {1'b0, target1_final};
+    wire [8:0] a2_indep = {1'b0, target2_final};
+    wire [8:0] a3_indep = {1'b0, target3_final};
 
     wire [3:0] c0_indep, c1_indep, c2_indep, c3_indep;
     adder_sat adder_sat0_indep (a0_indep[8:4], b0_8x8_half, c0_indep);
