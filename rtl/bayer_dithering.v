@@ -39,7 +39,13 @@ module bayer_dithering #(
     parameter CFA_BIAS_G = 20,        // Green - easy to turn ON
     parameter CFA_BIAS_R = 20,        // Red - easy to turn ON
     parameter FATTEN = 0,             // Lower threshold globally (fatter text, 0-20)
-    parameter W_DARKEN = 4'd0         // Darken W subpixels in 2-bit simple path
+    parameter W_DARKEN = 4'd0,        // Darken W subpixels in 2-bit simple path
+    // W-anchored spectral dithering parameters (for FAST_GREY 2-bit)
+    parameter SATURATION = 8'd128,    // Color saturation (0=grayscale, 255=max sat)
+    parameter K_R = 8'd77,            // Red filter transmission (0.30 * 256)
+    parameter K_G = 8'd154,           // Green filter transmission (0.60 * 256)
+    parameter K_B = 8'd26,            // Blue filter transmission (0.10 * 256)
+    parameter K_W = 8'd256            // White (clear) transmission (1.00 * 256, special)
 ) (
     input wire                       clk,
     input wire                       rst,
@@ -287,7 +293,146 @@ module bayer_dithering #(
     adder_sat adder_sat2 (a2[8:4], b2, c2);
     adder_sat adder_sat3 (a3[8:4], b3, c3);
 
-    // 2-bit path: per-CFA brightness bias for FAST_GREY
+    // =========================================================================
+    // W-Anchored Spectral Dithering for 2-bit Path (FAST_GREY)
+    //
+    // Algorithm:
+    // 1. W channel = luminance anchor (Y8 input directly)
+    // 2. RGB channels = W + saturation_boost (creates color via deviation)
+    // 3. Luminance balancing via W adjustment (ensures perceived luminance = Y8)
+    // 4. Per-channel 8x8 Bayer dithering
+    //
+    // This exploits gray-behind-CFA for saturation control:
+    // - High reflectance behind filter = saturated color
+    // - Low reflectance behind filter = desaturated color
+    // - All channels equal = achromatic (grayscale)
+    // =========================================================================
+
+    // Step 1: Calculate saturation boost (255-Y8) × saturation_param
+    // Brighter pixels get less boost (avoid oversaturation)
+    // Result: 16-bit intermediate (saturation_boost_scaled)
+    wire [7:0] lum_complement = 8'd255 - pix0;  // Same for all pixels (group average)
+    wire [15:0] sat_boost_mul = lum_complement * SATURATION;  // 8-bit × 8-bit = 16-bit
+    wire [7:0] saturation_boost = sat_boost_mul[15:8];  // Divide by 256 (take upper byte)
+
+    // Step 2: Per-channel targets with spectral weighting
+    // W channel: Direct from luminance
+    // RGB channels: Luminance + weighted boost
+    // Weight factors compensate for filter transmission differences
+
+    // CFA position determines which calculation to use
+    // Row 0 (cfa_row=0): B(even), W(odd)
+    // Row 1 (cfa_row=1): G(even), R(odd)
+
+    // Spectral weights (boost factors to compensate for filter loss)
+    // Higher weight = more boost = more saturation for that color
+    // B needs most boost (dim filter), W needs none (no filter)
+    localparam [7:0] WEIGHT_B = 8'd255;  // Blue: max boost (k=0.10, very dim)
+    localparam [7:0] WEIGHT_G = 8'd160;  // Green: moderate boost (k=0.60, medium)
+    localparam [7:0] WEIGHT_R = 8'd200;  // Red: high boost (k=0.30, dimmer)
+    localparam [7:0] WEIGHT_W = 8'd0;    // White: no boost (k=1.00, brightest)
+
+    // Calculate weighted saturation boosts
+    wire [15:0] boost_b_mul = saturation_boost * WEIGHT_B;
+    wire [15:0] boost_g_mul = saturation_boost * WEIGHT_G;
+    wire [15:0] boost_r_mul = saturation_boost * WEIGHT_R;
+    wire [7:0] boost_b = boost_b_mul[15:8];  // / 256
+    wire [7:0] boost_g = boost_g_mul[15:8];
+    wire [7:0] boost_r = boost_r_mul[15:8];
+    wire [7:0] boost_w = 8'd0;  // W gets no boost
+
+    // Per-pixel target calculation based on CFA position
+    // Row 0: pix0,pix2 = B  |  pix1,pix3 = W
+    // Row 1: pix0,pix2 = G  |  pix1,pix3 = R
+
+    // Saturating addition helper (caps at 255)
+    function [7:0] sat_add;
+        input [7:0] a;
+        input [7:0] b;
+        reg [8:0] sum;
+        begin
+            sum = {1'b0, a} + {1'b0, b};
+            sat_add = sum[8] ? 8'd255 : sum[7:0];
+        end
+    endfunction
+
+    wire [7:0] target0_spec = (cfa_row == 1'b0) ? sat_add(pix0, boost_b) : sat_add(pix0, boost_g);
+    wire [7:0] target1_spec = (cfa_row == 1'b0) ? sat_add(pix1, boost_w) : sat_add(pix1, boost_r);
+    wire [7:0] target2_spec = (cfa_row == 1'b0) ? sat_add(pix2, boost_b) : sat_add(pix2, boost_g);
+    wire [7:0] target3_spec = (cfa_row == 1'b0) ? sat_add(pix3, boost_w) : sat_add(pix3, boost_r);
+
+    // Step 3: Luminance balancing via W channel adjustment
+    // Calculate perceived luminance from current targets
+    // Y_perceived ≈ (R×k_R + G×k_G + B×k_B + W×k_W) / (4 × 256)
+    //
+    // For efficiency, we approximate:
+    // Since we're working with 8-bit values and filter coefficients sum to ~512,
+    // we can simplify by computing weighted sum and comparing to target
+
+    // Get filter coefficients for current CFA position
+    wire [7:0] k0 = (cfa_row == 1'b0) ? K_B : K_G;
+    wire [7:0] k1 = (cfa_row == 1'b0) ? K_W : K_R;
+    wire [7:0] k2 = (cfa_row == 1'b0) ? K_B : K_G;
+    wire [7:0] k3 = (cfa_row == 1'b0) ? K_W : K_R;
+
+    // Weighted contributions (16-bit intermediates)
+    wire [15:0] contrib0 = target0_spec * k0;
+    wire [15:0] contrib1 = target1_spec * k1;
+    wire [15:0] contrib2 = target2_spec * k2;
+    wire [15:0] contrib3 = target3_spec * k3;
+
+    // Sum contributions (18-bit to avoid overflow)
+    wire [17:0] contrib_sum = {2'b0, contrib0} + {2'b0, contrib1} + {2'b0, contrib2} + {2'b0, contrib3};
+
+    // Current perceived luminance (divide by 4×256 = 1024 = >> 10)
+    wire [7:0] y_current = contrib_sum[17:10];
+
+    // Target luminance (average of 4 input pixels)
+    wire [9:0] pix_sum = {2'b0, pix0} + {2'b0, pix1} + {2'b0, pix2} + {2'b0, pix3};
+    wire [7:0] y_target = pix_sum[9:2];  // / 4
+
+    // Luminance error (signed)
+    wire signed [8:0] lum_error = {1'b0, y_target} - {1'b0, y_current};
+
+    // Apply correction to W subpixels only (highest efficiency, k_W ≈ 1.0)
+    // Scale correction by ~4 (since only 1-2 W pixels per group)
+    wire signed [9:0] w_correction = lum_error <<< 2;  // × 4
+
+    // Saturating signed addition for W channel correction
+    function [7:0] sat_add_signed;
+        input [7:0] base;
+        input signed [9:0] correction;
+        reg signed [9:0] result;
+        begin
+            result = $signed({2'b0, base}) + correction;
+            if (result < 0)
+                sat_add_signed = 8'd0;
+            else if (result > 255)
+                sat_add_signed = 8'd255;
+            else
+                sat_add_signed = result[7:0];
+        end
+    endfunction
+
+    // Final targets with W correction (only adjust W pixels)
+    wire [7:0] target0_final = target0_spec;  // B or G (no correction)
+    wire [7:0] target1_final = (cfa_row == 1'b0) ? sat_add_signed(target1_spec, w_correction) : target1_spec;  // W corrected, R not
+    wire [7:0] target2_final = target2_spec;  // B or G (no correction)
+    wire [7:0] target3_final = (cfa_row == 1'b0) ? sat_add_signed(target3_spec, w_correction) : target3_spec;  // W corrected, R not
+
+    // Step 4: Apply 8x8 Bayer dithering to final targets
+    wire [8:0] a0_spec = {1'b0, target0_final};
+    wire [8:0] a1_spec = {1'b0, target1_final};
+    wire [8:0] a2_spec = {1'b0, target2_final};
+    wire [8:0] a3_spec = {1'b0, target3_final};
+
+    wire [3:0] c0_spec, c1_spec, c2_spec, c3_spec;
+    adder_sat adder_sat0_spec (a0_spec[8:4], b0_8x8_half, c0_spec);
+    adder_sat adder_sat1_spec (a1_spec[8:4], b1_8x8_half, c1_spec);
+    adder_sat adder_sat2_spec (a2_spec[8:4], b2_8x8_half, c2_spec);
+    adder_sat adder_sat3_spec (a3_spec[8:4], b3_8x8_half, c3_spec);
+
+    // 2-bit path: per-CFA brightness bias for FAST_GREY (legacy path, kept for compatibility)
     // Compensates for 8x8 Bayer matrix CFA imbalance:
     // B avg=-5.7, W avg=+1.9, G avg=+5.6, R avg=-1.9
     // Add inverse to each CFA color to neutralize
@@ -587,17 +732,18 @@ module bayer_dithering #(
     assign final_out_1b[0] = use_simple_3 ? simple_out_1b[0] : bayer_out_1b[0];
 
     // 2-bit output (8x8 smooth Bayer) - for FAST_GREY
-    // Two paths (matches bayer_dither_4level_edge_aware_no_simple):
+    // Three paths:
     // 1. Grayscale (200dpi): for black text on white (edge + low sat + bright bg + dark pixel)
-    // 2. CFA Bayer dither: for everything else
+    // 2. W-Anchored Spectral: for color saturation control (new default)
+    // 3. Legacy CFA Bayer: kept for compatibility (use when SATURATION=0)
     wire [1:0] out0_2b = (pix0 >= 8'd250) ? 2'b11 : (pix0 <= 8'd5) ? 2'b00 :
-                         use_gray_0 ? c0_gray[3:2] : c0_2b[3:2];
+                         use_gray_0 ? c0_gray[3:2] : c0_spec[3:2];
     wire [1:0] out1_2b = (pix1 >= 8'd250) ? 2'b11 : (pix1 <= 8'd5) ? 2'b00 :
-                         use_gray_1 ? c1_gray[3:2] : c1_2b[3:2];
+                         use_gray_1 ? c1_gray[3:2] : c1_spec[3:2];
     wire [1:0] out2_2b = (pix2 >= 8'd250) ? 2'b11 : (pix2 <= 8'd5) ? 2'b00 :
-                         use_gray_2 ? c2_gray[3:2] : c2_2b[3:2];
+                         use_gray_2 ? c2_gray[3:2] : c2_spec[3:2];
     wire [1:0] out3_2b = (pix3 >= 8'd250) ? 2'b11 : (pix3 <= 8'd5) ? 2'b00 :
-                         use_gray_3 ? c3_gray[3:2] : c3_2b[3:2];
+                         use_gray_3 ? c3_gray[3:2] : c3_spec[3:2];
     wire [7:0] final_out_2b = {out0_2b, out1_2b, out2_2b, out3_2b};
 
     always @(posedge clk) begin
