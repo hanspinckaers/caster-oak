@@ -529,10 +529,36 @@ module pixel_processing(
                     proc_output = `NO_DRIVE;
 
                     // Check doping phase FIRST (fg_counter=2 is doping marker)
-                    // pixel_prev[3:2] encodes doping phase: 00=first, 01=second, 10=done
+                    // For B/W: pixel_prev[3:2] = 00=first countdown, 01=second countdown, 10=done
+                    // For Gray: pixel_prev[3:2] = 00=countdown, 01=extreme drive, 10=reverse drive, 11=done
                     if (fg_counter == 2'd2) begin
-                        if (fg_frames > 4'd1) begin
-                            // Doping countdown
+                        // Check if gray target in driving phase (need to output drive during countdown)
+                        if ((pixel_prev[1:0] == 2'b01 || pixel_prev[1:0] == 2'b10) &&
+                            (pixel_prev[3:2] == 2'b01 || pixel_prev[3:2] == 2'b10)) begin
+                            // Gray in drive phase - output drive and countdown
+                            if (pixel_prev[3:2] == 2'b01) begin
+                                // Extreme drive: DG(01)->black, LG(10)->white
+                                proc_output = pixel_prev[0] ? `DRIVE_BLACK : `DRIVE_WHITE;
+                            end
+                            else begin
+                                // Reverse drive: DG(01)->white, LG(10)->black
+                                proc_output = pixel_prev[1] ? `DRIVE_BLACK : `DRIVE_WHITE;
+                            end
+                            if (fg_frames > 4'd1) begin
+                                proc_bo = {proc_bi[15:12], STAGE_DONE, 2'd2, fg_frames_dec, proc_bi[3:0]};
+                            end
+                            else begin
+                                // Transition to next phase
+                                if (pixel_prev[3:2] == 2'b01)
+                                    // Extreme done -> start 2-frame reverse
+                                    proc_bo = {proc_bi[15:12], STAGE_DONE, 2'd2, 4'd2, 2'b10, pixel_prev[1:0]};
+                                else
+                                    // Reverse done -> mark complete
+                                    proc_bo = {proc_bi[15:12], STAGE_DONE, 2'd2, 4'd0, 2'b11, pixel_prev[1:0]};
+                            end
+                        end
+                        else if (fg_frames > 4'd1) begin
+                            // Doping countdown (B/W or Gray phase 00)
                             proc_bo = {proc_bi[15:12], STAGE_DONE, 2'd2, fg_frames_dec, proc_bi[3:0]};
                         end
                         else if (fg_frames == 4'd1) begin
@@ -554,11 +580,10 @@ module pixel_processing(
                                     proc_bo = {proc_bi[15:12], STAGE_DONE, 2'd2, 4'd0, 2'b10, pixel_prev[1:0]};
                             end
                             else begin
-                                // Gray (01 or 10) - no doping, just advance phase
-                                if (pixel_prev[3:2] == 2'b00)
-                                    proc_bo = {proc_bi[15:12], STAGE_DONE, 2'd2, 4'd15, 2'b01, pixel_prev[1:0]};
-                                else
-                                    proc_bo = {proc_bi[15:12], STAGE_DONE, 2'd2, 4'd0, 2'b10, pixel_prev[1:0]};
+                                // Gray (01 or 10) - start 2-frame extreme drive
+                                // This frame is drive 1, fg_frames=1 gives 1 more frame
+                                proc_output = pixel_prev[0] ? `DRIVE_BLACK : `DRIVE_WHITE;
+                                proc_bo = {proc_bi[15:12], STAGE_DONE, 2'd2, 4'd1, 2'b01, pixel_prev[1:0]};
                             end
                         end
                         else begin
