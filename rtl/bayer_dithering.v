@@ -294,13 +294,20 @@ module bayer_dithering #(
     //   Reflectance (gray level) × Filter = Colored light output
     //
     //   Example: Red filter
-    //     - B(00) behind R filter = BLACK (no light to reflect → sat 0)
-    //     - DG(01) behind R filter = very dark red (low brightness, approaching black)
+    //     - B(00) behind R filter = BLACK (no light to reflect)
+    //     - DG(01) behind R filter = very dark red
     //     - LG(10) behind R filter = medium red
     //     - W(11) behind R filter = bright saturated red
     //
-    //   Total palette: 4 gray levels × 4 filters = 16 base colors
-    //   Spatial dithering + additive mixing = thousands of effective colors
+    //   Palette structure:
+    //     - 13 distinct primaries:
+    //       • 1 black (B(00) behind any filter)
+    //       • 3 blues (DG/LG/W behind B filter)
+    //       • 3 greens (DG/LG/W behind G filter)
+    //       • 3 reds (DG/LG/W behind R filter)
+    //       • 3 grays (DG/LG/W behind W filter)
+    //     - 256 combinations per 2×2 CFA quad (4 positions × 4 gray levels)
+    //     - Thousands of effective colors via 8×8 spatial dithering + additive mixing
     //
     // Algorithm (for grayscale Y8 input → neutral gray):
     //   1. Filter compensation: Balance RGB contributions for achromatic output
@@ -309,9 +316,9 @@ module bayer_dithering #(
     //      - Red (k=0.30) needs bright gray
     //      - White (k=1.00) carries achromatic luminance
     //   2. Luminance balancing: Ensure total brightness matches Y8 target
-    //   3. Independent dithering: Each channel to 2-bit, mix additively
+    //   3. Independent dithering: Each subpixel to 2-bit, mix additively
     //
-    // Result: Neutral grayscale exploiting full RGBW palette
+    // Result: Neutral grayscale exploiting full 256-combination palette
     // Future: RGB color input → saturated colors via unequal channel levels
     // =========================================================================
 
