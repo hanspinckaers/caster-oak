@@ -290,20 +290,29 @@ module bayer_dithering #(
     // =========================================================================
     // Filter-Compensated Vector Dithering for 2-bit RGBW (FAST_GREY)
     //
-    // Exploits gray-behind-CFA physics:
-    //   - Blue filter + B/DG/LG/W gray = 4 different "blues" (varying sat/lum)
-    //   - Same for Green, Red, White filters
-    //   - Total palette: 16 base colors × spatial dithering = thousands of colors
+    // Exploits gray-behind-CFA physics on REFLECTIVE displays:
+    //   Reflectance (gray level) × Filter = Colored light output
     //
-    // Algorithm (for grayscale Y8 input):
-    //   1. Compensate each subpixel for its filter transmission
-    //      - Dim filters (B) need brighter grays to match target luminance
-    //      - Bright filters (W) need darker grays
-    //   2. Balance total luminance across 4-subpixel group
-    //   3. Dither each channel independently to 2-bit
+    //   Example: Red filter
+    //     - B(00) behind R filter = BLACK (no light to reflect → sat 0)
+    //     - DG(01) behind R filter = very dark red (low brightness, approaching black)
+    //     - LG(10) behind R filter = medium red
+    //     - W(11) behind R filter = bright saturated red
     //
-    // Result: Neutral grayscale with maximum use of available palette
-    // Future: RGB input maps to RGBW, creating full color reproduction
+    //   Total palette: 4 gray levels × 4 filters = 16 base colors
+    //   Spatial dithering + additive mixing = thousands of effective colors
+    //
+    // Algorithm (for grayscale Y8 input → neutral gray):
+    //   1. Filter compensation: Balance RGB contributions for achromatic output
+    //      - Blue (k=0.10 dim) needs brighter gray for equal RGB contribution
+    //      - Green (k=0.60) needs moderate gray
+    //      - Red (k=0.30) needs bright gray
+    //      - White (k=1.00) carries achromatic luminance
+    //   2. Luminance balancing: Ensure total brightness matches Y8 target
+    //   3. Independent dithering: Each channel to 2-bit, mix additively
+    //
+    // Result: Neutral grayscale exploiting full RGBW palette
+    // Future: RGB color input → saturated colors via unequal channel levels
     // =========================================================================
 
     // Filter transmission coefficients (scaled by 256)
