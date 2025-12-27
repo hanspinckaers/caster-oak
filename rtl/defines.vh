@@ -168,12 +168,29 @@
 //`define DEFAULT_HBP         8'd2
 //`define DEFAULT_HACT        12'd200
 
+// 16 bits per pixel
 `define DEFAULT_FBYTES      `DEFAULT_HACT * 4 * `DEFAULT_VACT * 2
 `define DEFAULT_MINDRV        2'd2
 
+// FAST_GREY timing (13 frames total)
+`define FASTG_MONO_FRAMES       4'd6    // Base MONO duration
+`define FASTG_BW_REST_FRAMES    4'd7    // REST for B/W after MONO
+`define FASTG_REVERSE_FRAMES    4'd2    // REVERSE for gray (determines gray level)
+`define FASTG_SETTLE_FRAMES     4'd5    // SETTLE for gray after reverse
+`define FASTG_VIDEO_COOLDOWN    4'd13   // Cooldown in DONE (ensures ~1 sec before doping eligible)
+
+// Global doping schedule
+`define DOPING_EXTREME_FRAMES   2'd2    // Frames in extreme phase
+`define DOPING_REVERSE_FRAMES   2'd2    // Frames in reverse phase
+`define DOPING_WAIT_FRAMES      6'd25   // ~1 sec at 25fps between doping cycles
+
+// DC bias (2-bit, stored in pixel_prev[3:2] during DONE/HOLD/GREY)
+`define DC_BIAS_MAX             2'd3
+`define OVERDRIVE_MAX           2'd3
+
 //`define USE_BLUE_NOISE  // Use blue noise instead of bayer
 
-// Mode entered during power up
+// Mode entered during power up (16-bit state)
 `define INIT_AUTO_LUT_ND    {MODE_AUTO_LUT_NO_DITHER, 2'd0, 6'd0, 4'd15}
 `define INIT_AUTO_LUT_OD    {MODE_AUTO_LUT_BLUE_NOISE, 2'd0, 6'd0, 4'd15}
 `define INIT_FAST_MONO_BD   {MODE_FAST_MONO_BAYER, 2'b0, 6'd0, 3'd0, 1'b1}

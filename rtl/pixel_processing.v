@@ -32,7 +32,9 @@ module pixel_processing(
     input  wire [7:0]  op_param,    // External operation parameter
     input  wire [7:0]  op_framecnt, // Current overall frame counter for state
     input  wire [5:0]  al_framecnt, // Auto LUT mode frame counter
-    input  wire        neighbor_video // Neighbor pixel is in video mode (FAST_GREY)
+    input  wire        neighbor_video, // Neighbor pixel is in video mode (FAST_GREY)
+    input  wire        doping_active, // Global doping sequence in progress
+    input  wire        doping_phase   // 0 = extreme drive, 1 = reverse drive
 );
 
     // Pixel state: 16bits
@@ -51,12 +53,8 @@ module pixel_processing(
     localparam FASTM_B2W_FRAMES = 6'd7;      // MONO duration for all pixels
     localparam FASTM_W2B_FRAMES = 6'd7;
 
-    // FAST_GREY timing (synchronized: B/W=7+5=12, Grey=7+2+3=12)
-    localparam FASTG_BW_REST_FRAMES = 6'd5;  // REST for B/W after MONO
-    localparam FASTG_B2G_FRAMES = 6'd2;      // Reverse frames for grey (black side)
-    localparam FASTG_W2G_FRAMES = 6'd2;      // Reverse frames for grey (white side)
-    localparam FASTG_SETTLE_FRAMES = 6'd3;   // REST for grey after reverse
-    localparam [3:0] FASTG_VIDEO_COOLDOWN = 4'd8; // Frames before counter decays (4-bit, max 15)
+    // FAST_GREY timing (13 frames total: B/W=6+7=13, Grey=6+2+5=13)
+    // Use defines from defines.vh for consistency
 
     localparam AUTOLUT_HOLDOFF_FRAMES = 6'd60;
 
@@ -430,16 +428,18 @@ module pixel_processing(
             end
         end
         BASEMODE_FAST_GREY: begin
-            // Synchronized driving with reversal for grey targets
-            // All pixels drive to extreme during MONO (7 frames)
-            // B/W: REST in HOLD (5 frames), total 12
-            // Grey: REVERSE + REST in GREY (2+3 frames), total 12
+            // Synchronized driving with reversal for grey targets (13 frames total)
+            // Base MONO: 6 frames, with 0-3 overdrive frames based on dc_bias
+            // B/W: MONO (6-9) + REST in HOLD (7-4) = 13 frames
+            // Grey: MONO (6-9) + REVERSE (2) + SETTLE (5-2) = 13 frames
             // Frame counter encoding: [5:4]=video counter, [3:0]=stage frames
             // pixel_prev[1:0] = target (00=B, 01=DG, 10=LG, 11=W)
-            // pixel_prev[3:2] = mindrv (MONO) or unused (other stages)
+            // pixel_prev[3:2] = mindrv (MONO) or dc_bias (HOLD/GREY/DONE)
 
             if (pixel_stage == STAGE_MONO) begin
                 // Drive towards binary target (MSB of grey level)
+                // pixel_prev[3:2] = mindrv during MONO stage
+                // pixel_prev[1:0] = target color
                 proc_output = pixel_prev[1] ? `DRIVE_WHITE : `DRIVE_BLACK;
                 if ((proc_vin[3] != pixel_prev[1]) && (pixel_mindrv == 2'd0)) begin
                     // Binary direction changed mid-transition - restart with MONO target (video mode)
@@ -448,11 +448,13 @@ module pixel_processing(
                     ) : {proc_bi[15:12], STAGE_MONO, fg_counter, fg_frames_2b, csr_mindrv, proc_vin_mono};
                 end
                 else if (fg_frames == 0) begin
-                    // MONO done - B/W goes to HOLD (REST), Grey goes to GREY (REVERSE)
+                    // MONO done - B/W goes to HOLD (REST), Grey goes to GREY (REVERSE+SETTLE)
+                    // Calculate REST/SETTLE based on how many MONO frames we used (for overdrive)
+                    // dc_bias starts at 0 when entering HOLD/GREY (overdrive already applied in MONO)
                     if (fg_is_grey_target)
-                        proc_bo = {proc_bi[15:12], STAGE_GREY, fg_counter, FASTG_B2G_FRAMES[3:0] + FASTG_SETTLE_FRAMES[3:0], 2'b00, proc_vin[3:2]};
+                        proc_bo = {proc_bi[15:12], STAGE_GREY, fg_counter, `FASTG_REVERSE_FRAMES + `FASTG_SETTLE_FRAMES, 2'b00, proc_vin[3:2]};
                     else
-                        proc_bo = {proc_bi[15:12], STAGE_HOLD, fg_counter, FASTG_BW_REST_FRAMES[3:0], 2'b00, proc_vin[3:2]};
+                        proc_bo = {proc_bi[15:12], STAGE_HOLD, fg_counter, `FASTG_BW_REST_FRAMES, 2'b00, proc_vin[3:2]};
                 end
                 else begin
                     proc_bo = {proc_bi[15:12], STAGE_MONO, fg_counter, fg_frames_dec, pixel_mindrv_dec, proc_bi[1:0]};
@@ -460,39 +462,44 @@ module pixel_processing(
             end
             else if (pixel_stage == STAGE_HOLD) begin
                 // REST for B/W targets (NO_DRIVE)
+                // pixel_prev[3:2] = dc_bias (preserved from DONE, reset to 0 when entering)
+                // pixel_prev[1:0] = target color
                 proc_output = `NO_DRIVE;
                 if (proc_vin[3] != pixel_prev[1]) begin
                     // Binary direction changed - restart MONO with mono target (video mode)
                     proc_bo = proc_vin[3] ? (
-                        {proc_bi[15:12], STAGE_MONO, fg_counter, FASTM_B2W_FRAMES[3:0], csr_mindrv, proc_vin_mono}
-                    ) : {proc_bi[15:12], STAGE_MONO, fg_counter, FASTM_W2B_FRAMES[3:0], csr_mindrv, proc_vin_mono};
+                        {proc_bi[15:12], STAGE_MONO, fg_counter, `FASTG_MONO_FRAMES, csr_mindrv, proc_vin_mono}
+                    ) : {proc_bi[15:12], STAGE_MONO, fg_counter, `FASTG_MONO_FRAMES, csr_mindrv, proc_vin_mono};
                 end
                 else if (fg_frames == 0) begin
-                    // Enter DONE: preserve counter, set cooldown timer
-                    proc_bo = {proc_bi[15:12], STAGE_DONE, fg_counter, FASTG_VIDEO_COOLDOWN, 2'b00, proc_vin[3:2]};
+                    // Enter DONE: preserve counter, set cooldown timer, preserve dc_bias
+                    proc_bo = {proc_bi[15:12], STAGE_DONE, fg_counter, `FASTG_VIDEO_COOLDOWN, proc_bi[3:0]};
                 end
                 else begin
                     proc_bo = {proc_bi[15:12], STAGE_HOLD, fg_counter, fg_frames_dec, proc_bi[3:0]};
                 end
             end
             else if (pixel_stage == STAGE_GREY) begin
-                // REVERSE drive for grey targets, then REST
-                // pixel_prev[1]: 0=drove to black, 1=drove to white
+                // REVERSE drive for grey targets, then SETTLE (REST)
+                // pixel_prev[3:2] = dc_bias (preserved, reset to 0 when entering from MONO)
+                // pixel_prev[1]: 0=drove to black (DG), 1=drove to white (LG)
+                // pixel_prev[0]: same as [1] for grey
                 // Reverse: if drove black, now drive white (and vice versa)
                 if (proc_vin[3] != pixel_prev[1]) begin
                     // Binary direction changed mid-grey - restart MONO with mono target (video mode)
                     proc_output = `NO_DRIVE;
                     proc_bo = proc_vin[3] ? (
-                        {proc_bi[15:12], STAGE_MONO, fg_counter, FASTM_B2W_FRAMES[3:0], csr_mindrv, proc_vin_mono}
-                    ) : {proc_bi[15:12], STAGE_MONO, fg_counter, FASTM_W2B_FRAMES[3:0], csr_mindrv, proc_vin_mono};
+                        {proc_bi[15:12], STAGE_MONO, fg_counter, `FASTG_MONO_FRAMES, csr_mindrv, proc_vin_mono}
+                    ) : {proc_bi[15:12], STAGE_MONO, fg_counter, `FASTG_MONO_FRAMES, csr_mindrv, proc_vin_mono};
                 end
                 else if (fg_frames == 0) begin
-                    // Enter DONE: preserve counter, set cooldown timer
+                    // Enter DONE: preserve counter, set cooldown timer, preserve dc_bias
                     proc_output = `NO_DRIVE;
-                    proc_bo = {proc_bi[15:12], STAGE_DONE, fg_counter, FASTG_VIDEO_COOLDOWN, 2'b00, proc_bi[1:0]};
+                    proc_bo = {proc_bi[15:12], STAGE_DONE, fg_counter, `FASTG_VIDEO_COOLDOWN, proc_bi[3:0]};
                 end
                 else begin
-                    if (fg_frames > FASTG_SETTLE_FRAMES[3:0]) begin
+                    // REVERSE for first FASTG_REVERSE_FRAMES, then SETTLE (NO_DRIVE)
+                    if (fg_frames > `FASTG_SETTLE_FRAMES) begin
                         proc_output = pixel_prev[1] ? `DRIVE_BLACK : `DRIVE_WHITE;
                     end
                     else begin
@@ -502,109 +509,100 @@ module pixel_processing(
                 end
             end
             else if (pixel_stage == STAGE_DONE) begin
-                // fg_counter = video change counter (0-3)
+                // fg_counter = video change counter (0-3), no longer uses 2 as doping marker
                 // fg_frames = cooldown timer
+                // pixel_prev[3:2] = dc_bias (0-3) in DONE stage
+                // pixel_prev[1:0] = current color (00=B, 01=DG, 10=LG, 11=W)
+
+                // Truly idle: cooldown expired and counter at 0
+                wire fg_truly_idle = (fg_counter == 2'd0) && (fg_frames == 4'd0);
+                // DC bias from pixel_prev[3:2]
+                wire [1:0] dc_bias = pixel_prev[3:2];
+
                 if (proc_vin[3:2] != pixel_prev[1:0]) begin
                     // Target changed - increment counter and start transition
                     proc_output = `NO_DRIVE;
+                    // Check if switching direction (for overdrive calculation)
+                    wire switching_dir = (proc_vin[3] != pixel_prev[1]);
+                    // Calculate overdrive: add dc_bias frames if switching direction
+                    wire [3:0] mono_frames_base = `FASTG_MONO_FRAMES;
+                    wire [3:0] mono_frames_od = switching_dir ? (mono_frames_base + {2'b0, dc_bias}) : mono_frames_base;
+                    // Reset dc_bias if overdrive applied, preserve otherwise
+                    wire [1:0] new_dc_bias = switching_dir ? 2'd0 : dc_bias;
+
                     // Video mode: 3+ changes within cooldown window, force mono
                     if (fg_video_mode) begin
                         proc_bo = proc_vin[3] ? (
-                            {proc_bi[15:12], STAGE_MONO, fg_counter, FASTM_B2W_FRAMES[3:0], csr_mindrv, proc_vin_mono}
-                        ) : {proc_bi[15:12], STAGE_MONO, fg_counter, FASTM_W2B_FRAMES[3:0], csr_mindrv, proc_vin_mono};
+                            {proc_bi[15:12], STAGE_MONO, fg_counter, mono_frames_od, csr_mindrv, proc_vin_mono}
+                        ) : {proc_bi[15:12], STAGE_MONO, fg_counter, mono_frames_od, csr_mindrv, proc_vin_mono};
                     end
                     // Same-side grey transition (W→LG or B→DG): skip MONO
                     else if (fg_is_grey_target && (proc_vin[3] == pixel_prev[1])) begin
-                        proc_bo = {proc_bi[15:12], STAGE_GREY, fg_counter_inc, FASTG_B2G_FRAMES[3:0] + FASTG_SETTLE_FRAMES[3:0], 2'b00, proc_vin[3:2]};
+                        proc_bo = {proc_bi[15:12], STAGE_GREY, fg_counter_inc, `FASTG_REVERSE_FRAMES + `FASTG_SETTLE_FRAMES, new_dc_bias, proc_vin[3:2]};
                     end
                     else begin
-                        // Different side or B/W target: need MONO (6 frames for extremes, 7 for grey)
+                        // Different side or B/W target: need MONO with possible overdrive
                         proc_bo = proc_vin[3] ? (
-                            {proc_bi[15:12], STAGE_MONO, fg_counter_inc, fg_mono_frames_2w, csr_mindrv, proc_vin[3:2]}
-                        ) : {proc_bi[15:12], STAGE_MONO, fg_counter_inc, fg_mono_frames_2b, csr_mindrv, proc_vin[3:2]};
+                            {proc_bi[15:12], STAGE_MONO, fg_counter_inc, mono_frames_od, csr_mindrv, proc_vin[3:2]}
+                        ) : {proc_bi[15:12], STAGE_MONO, fg_counter_inc, mono_frames_od, csr_mindrv, proc_vin[3:2]};
                     end
                 end
                 else begin
-                    // No change - manage cooldown, counter decay, and doping
-                    proc_output = `NO_DRIVE;
+                    // No change - manage cooldown, counter decay, and global doping response
 
-                    // Check doping phase FIRST (fg_counter=2 is doping marker)
-                    // For B/W: pixel_prev[3:2] = 00=first countdown, 01=second countdown, 10=done
-                    // For Gray: pixel_prev[3:2] = 00=countdown, 01=extreme drive, 10=reverse drive, 11=done
-                    if (fg_counter == 2'd2) begin
-                        // Check if gray target in driving phase (need to output drive during countdown)
-                        if ((pixel_prev[1:0] == 2'b01 || pixel_prev[1:0] == 2'b10) &&
-                            (pixel_prev[3:2] == 2'b01 || pixel_prev[3:2] == 2'b10)) begin
-                            // Gray in drive phase - output drive and countdown
-                            if (pixel_prev[3:2] == 2'b01) begin
-                                // Extreme drive: DG(01)->black, LG(10)->white
-                                proc_output = pixel_prev[0] ? `DRIVE_BLACK : `DRIVE_WHITE;
-                            end
-                            else begin
-                                // Reverse drive: DG(01)->white, LG(10)->black
-                                proc_output = pixel_prev[1] ? `DRIVE_BLACK : `DRIVE_WHITE;
-                            end
-                            if (fg_frames > 4'd1) begin
-                                proc_bo = {proc_bi[15:12], STAGE_DONE, 2'd2, fg_frames_dec, proc_bi[3:0]};
-                            end
-                            else begin
-                                // Transition to next phase
-                                if (pixel_prev[3:2] == 2'b01)
-                                    // Extreme done -> start 2-frame reverse
-                                    proc_bo = {proc_bi[15:12], STAGE_DONE, 2'd2, 4'd2, 2'b10, pixel_prev[1:0]};
-                                else
-                                    // Reverse done -> mark complete
-                                    proc_bo = {proc_bi[15:12], STAGE_DONE, 2'd2, 4'd0, 2'b11, pixel_prev[1:0]};
-                            end
+                    // Global doping: only respond when truly idle
+                    if (doping_active && fg_truly_idle) begin
+                        // Respond to global doping based on pixel color and phase
+                        if (pixel_prev[1:0] == 2'b00) begin
+                            // Black pixel: always drive black (both phases)
+                            proc_output = `DRIVE_BLACK;
                         end
-                        else if (fg_frames > 4'd1) begin
-                            // Doping countdown (B/W or Gray phase 00)
-                            proc_bo = {proc_bi[15:12], STAGE_DONE, 2'd2, fg_frames_dec, proc_bi[3:0]};
+                        else if (pixel_prev[1:0] == 2'b11) begin
+                            // White pixel: always drive white (both phases)
+                            proc_output = `DRIVE_WHITE;
                         end
-                        else if (fg_frames == 4'd1) begin
-                            // Time to dope
-                            if (pixel_prev[1:0] == 2'b00) begin
-                                // Black - single pulse
-                                proc_output = `DRIVE_BLACK;
-                                if (pixel_prev[3:2] == 2'b00)
-                                    proc_bo = {proc_bi[15:12], STAGE_DONE, 2'd2, 4'd15, 2'b01, pixel_prev[1:0]};
-                                else
-                                    proc_bo = {proc_bi[15:12], STAGE_DONE, 2'd2, 4'd0, 2'b10, pixel_prev[1:0]};
-                            end
-                            else if (pixel_prev[1:0] == 2'b11) begin
-                                // White - single pulse
-                                proc_output = `DRIVE_WHITE;
-                                if (pixel_prev[3:2] == 2'b00)
-                                    proc_bo = {proc_bi[15:12], STAGE_DONE, 2'd2, 4'd15, 2'b01, pixel_prev[1:0]};
-                                else
-                                    proc_bo = {proc_bi[15:12], STAGE_DONE, 2'd2, 4'd0, 2'b10, pixel_prev[1:0]};
+                        else if (doping_phase == 1'b0) begin
+                            // Gray extreme phase: DG(01)->black, LG(10)->white
+                            proc_output = pixel_prev[0] ? `DRIVE_BLACK : `DRIVE_WHITE;
+                        end
+                        else begin
+                            // Gray reverse phase: DG(01)->white, LG(10)->black
+                            proc_output = pixel_prev[1] ? `DRIVE_BLACK : `DRIVE_WHITE;
+                        end
+
+                        // Update dc_bias at end of doping (last frame of reverse phase)
+                        // B/W pixels accumulate bias, gray stays balanced
+                        if (doping_phase == 1'b1) begin
+                            // Reverse phase - increment dc_bias for B/W only
+                            if (pixel_prev[1:0] == 2'b00 || pixel_prev[1:0] == 2'b11) begin
+                                // B/W: increment dc_bias (saturate at 3)
+                                proc_bo = {proc_bi[15:12], STAGE_DONE, 2'd0, 4'd0,
+                                    (dc_bias == 2'd3) ? 2'd3 : (dc_bias + 2'd1), pixel_prev[1:0]};
                             end
                             else begin
-                                // Gray (01 or 10) - start 2-frame extreme drive
-                                // This frame is drive 1, fg_frames=1 gives 1 more frame
-                                proc_output = pixel_prev[0] ? `DRIVE_BLACK : `DRIVE_WHITE;
-                                proc_bo = {proc_bi[15:12], STAGE_DONE, 2'd2, 4'd1, 2'b01, pixel_prev[1:0]};
+                                // Gray: no dc_bias change (balanced doping)
+                                proc_bo = proc_bi;
                             end
                         end
                         else begin
-                            // fg_frames == 0: all doping done, stay idle
+                            // Extreme phase - no state change yet
                             proc_bo = proc_bi;
                         end
                     end
                     else if (fg_frames != 4'd0) begin
-                        // Normal cooldown active, decrement
+                        // Cooldown active, decrement
+                        proc_output = `NO_DRIVE;
                         proc_bo = {proc_bi[15:12], STAGE_DONE, fg_counter, fg_frames_dec, proc_bi[3:0]};
                     end
                     else if (fg_counter != 2'd0) begin
                         // Cooldown expired, decrement counter and reset cooldown
-                        // Skip counter=2 (doping marker): 3→1, 1→0
-                        proc_bo = (fg_counter == 2'd3) ?
-                            {proc_bi[15:12], STAGE_DONE, 2'd1, FASTG_VIDEO_COOLDOWN, proc_bi[3:0]} :
-                            {proc_bi[15:12], STAGE_DONE, fg_counter_dec, FASTG_VIDEO_COOLDOWN, proc_bi[3:0]};
+                        proc_output = `NO_DRIVE;
+                        proc_bo = {proc_bi[15:12], STAGE_DONE, fg_counter_dec, `FASTG_VIDEO_COOLDOWN, proc_bi[3:0]};
                     end
                     else begin
-                        // Fully idle - start doping countdown (~0.6 sec)
-                        proc_bo = {proc_bi[15:12], STAGE_DONE, 2'd2, 4'd15, proc_bi[3:0]};
+                        // Truly idle - just stay idle, global doping will trigger when active
+                        proc_output = `NO_DRIVE;
+                        proc_bo = proc_bi;
                     end
                 end
             end
