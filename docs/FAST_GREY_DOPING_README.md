@@ -15,19 +15,21 @@ E-ink displays accumulate charge over time when pixels stay at the same value. T
 
 ### Global Doping Pulses
 
-Every ~1 second, all idle pixels receive a 4-frame doping sequence:
-- **Frames 0-1 (Extreme)**: Drive toward the pixel's nearest extreme (B→Black, W→White, DG→Black, LG→White)
-- **Frames 2-3 (Reverse)**: Drive in the opposite direction
+Every ~1 second, idle pixels receive doping pulses:
+- **B/W pixels**: 1 frame pulse (Black→drive black, White→drive white)
+- **Gray pixels**: 4-frame balanced sequence (2 extreme + 2 reverse)
 
 Gray pixels (DG, LG) are DC-balanced: extreme then reverse cancels out.
-B/W pixels accumulate bias: same direction both phases.
+B/W pixels accumulate +1 dc_bias per pulse.
+
+Doping stops when dc_bias reaches maximum (3). No further pulses until bias is reset by overdrive.
 
 ### DC Bias Tracking
 
 Each pixel tracks accumulated bias in 2 bits (0-3 levels):
-- B/W pixels: +1 per doping cycle (saturates at 3)
-- Gray pixels: 0 (balanced doping)
-- Reset to 0 when overdrive is applied
+- B/W pixels: +1 per doping pulse (stops at 3)
+- Gray pixels: 0 (balanced doping, no accumulation)
+- Reset to 0 when overdrive is applied (direction switch)
 
 ### Dynamic Overdrive
 

@@ -290,6 +290,7 @@ module caster(
     reg [2:0] doping_frame_counter;  // 0-3 for 4-frame sequence
     reg doping_active;
     reg doping_phase;  // 0 = extreme, 1 = reverse
+    wire doping_first_frame = doping_active && (doping_frame_counter == 3'd0);
 
     always @(posedge clk) begin
         case (scan_state)
@@ -880,7 +881,8 @@ module caster(
                 .al_framecnt(al_framecnt),
                 .neighbor_video(neighbor_video[i]),
                 .doping_active(doping_active),
-                .doping_phase(doping_phase)
+                .doping_phase(doping_phase),
+                .doping_first_frame(doping_first_frame)
             );
 
             // Output
