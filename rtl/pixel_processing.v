@@ -450,9 +450,9 @@ module pixel_processing(
             end
         end
         BASEMODE_FAST_GREY: begin
-            // Synchronized driving with reversal for grey targets
+            // Synchronized driving with reversal for grey targets (16 frames total)
             // B/W: MONO 11 (drive 5, rest 2, drive 4) + REST 5 = 16 frames
-            // Gray: MONO 7 (continuous) + REVERSE 2 + SETTLE 3 = 12 frames
+            // Gray: MONO 7 (continuous) + REVERSE 2 + SETTLE 7 = 16 frames
             // Frame counter encoding: [5:4]=video counter, [3:0]=stage frames
             // pixel_prev[1:0] = target (00=B, 01=DG, 10=LG, 11=W)
             // pixel_prev[3:2] = mindrv (MONO) or dc_bias (HOLD/GREY/DONE)
