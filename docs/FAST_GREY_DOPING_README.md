@@ -22,14 +22,45 @@ Every ~1 second, idle pixels receive doping pulses:
 Gray pixels (DG, LG) are DC-balanced: extreme then reverse cancels out.
 B/W pixels accumulate +1 dc_bias per pulse.
 
-Doping stops when dc_bias reaches maximum (3). No further pulses until bias is reset by overdrive.
+### Doping Limits
 
-### DC Bias Tracking
+Doping stops after 3 cycles per idle period:
+- **All pixels**: Limited by `doping_count` (0-3), increments each cycle
+- **B/W pixels**: Also limited by `dc_bias` (stops if dc_bias=3)
+- **Gray pixels**: Only limited by `doping_count` (dc_bias doesn't block gray)
+
+### DC Bias Tracking and Decay
 
 Each pixel tracks accumulated bias in 2 bits (0-3 levels):
-- B/W pixels: +1 per doping pulse (stops at 3)
-- Gray pixels: 0 (balanced doping, no accumulation)
+- B/W pixels: +1 per doping pulse
+- Gray pixels: No change (balanced doping)
 - Reset to 0 when overdrive is applied (direction switch)
+
+**Decay**: After doping completes (`doping_count=3`), dc_bias decays by 1 per doping cycle until it reaches 0.
+
+### Idle Pixel Timeline (B/W)
+
+| Time | Action | dc_bias | doping_count |
+|------|--------|---------|--------------|
+| 0-1s | Cooldown | 0 | - |
+| 1-2s | Doping pulse 1 | 1 | 1 |
+| 2-3s | Doping pulse 2 | 2 | 2 |
+| 3-4s | Doping pulse 3 | 3 | 3 |
+| 4-5s | Decay | 2 | 3 |
+| 5-6s | Decay | 1 | 3 |
+| 6-7s | Decay | 0 | 3 |
+| 7s+ | Stable | 0 | 3 |
+
+### Overdrive Based on Transition Timing
+
+| Transition Time | dc_bias | Overdrive |
+|-----------------|---------|-----------|
+| ~2s after idle | 1 | 1 frame |
+| ~3s after idle | 2 | 2 frames |
+| ~4s after idle (peak) | 3 | 3 frames |
+| ~5s after idle | 2 | 2 frames |
+| ~6s after idle | 1 | 1 frame |
+| 7s+ after idle | 0 | 0 frames |
 
 ### Dynamic Overdrive
 
@@ -64,13 +95,25 @@ Total transition time stays constant at 13 frames. Overdrive borrows from rest/s
 
 REVERSE is fixed at 2 frames (determines gray level).
 
-## Doping Eligibility
+## Doping Mode and Eligibility
 
-Pixels only participate in doping when **truly idle**:
-- `fg_counter == 0` (no video mode cooldown)
+### Entering Doping Mode
+
+Pixels enter doping mode when **truly idle** and doping starts:
+- `fg_counter == 0` (cooldown complete)
 - `fg_frames == 0` (no transition in progress)
 
-This provides ~1 second immunity after any transition before doping can affect the pixel. Pixels in cooldown output NO_DRIVE during doping sequences.
+On entering doping mode, `fg_frames` is set to 15 (marker), and `fg_counter` becomes `doping_count`.
+
+### Doping Mode State
+
+- `fg_frames = 15`: Doping mode active
+- `fg_counter`: Tracks `doping_count` (0-3)
+- Exits on any color change (returns to cooldown)
+
+### Cooldown
+
+After any transition, ~1 second cooldown (`FASTG_VIDEO_COOLDOWN=13` frames) before doping eligibility. Pixels in cooldown output NO_DRIVE during doping sequences.
 
 ## Implementation
 
@@ -79,7 +122,9 @@ This provides ~1 second immunity after any transition before doping can affect t
 ```
 [15:12] - Mode (1011 = FAST_GREY)
 [11:10] - Stage (DONE=0, MONO=1, HOLD=2, GREY=3)
-[9:4]   - Frame counter: [5:4]=fg_counter, [3:0]=fg_frames
+[9:4]   - Frame counter:
+          - Cooldown mode: [5:4]=fg_counter (video), [3:0]=fg_frames (0-13)
+          - Doping mode: [5:4]=doping_count (0-3), [3:0]=15 (marker)
 [3:2]   - dc_bias (in HOLD/GREY/DONE) or mindrv (in MONO)
 [1:0]   - Target level (00=B, 01=DG, 10=LG, 11=W)
 ```
@@ -106,14 +151,18 @@ This provides ~1 second immunity after any transition before doping can affect t
 
 ### Signal Flow
 
-1. `caster.v` manages global doping timer
-2. `doping_active` and `doping_phase` signals broadcast to all pixels
-3. Each `pixel_processing` instance responds based on pixel state
-4. Only truly idle pixels participate; others output NO_DRIVE
+1. `caster.v` manages global doping timer, generates:
+   - `doping_active`: Doping sequence in progress
+   - `doping_phase`: 0=extreme, 1=reverse
+   - `doping_first_frame`: First frame of doping sequence
+2. Each `pixel_processing` instance responds based on pixel state
+3. Only doping-eligible pixels participate; others output NO_DRIVE
 
 ## Benefits
 
 - **No ghosting**: Regular doping pulses prevent charge accumulation
+- **Dynamic overdrive**: Compensates based on actual doping received
+- **Overdrive decay**: Long-idle pixels return to zero overdrive
 - **No timing penalty**: 13-frame total maintained via overdrive/rest tradeoff
-- **Minimal complexity**: 2-bit dc_bias fits in existing state
-- **Graceful degradation**: Max 3-frame overdrive still leaves 4-frame rest (B/W) or 2-frame settle (gray)
+- **Minimal complexity**: 2-bit dc_bias and doping_count fit in existing state
+- **Gray fairness**: Gray pixels not blocked by inherited dc_bias
