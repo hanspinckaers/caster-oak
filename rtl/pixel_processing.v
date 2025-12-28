@@ -445,10 +445,10 @@ module pixel_processing(
             end
         end
         BASEMODE_FAST_GREY: begin
-            // Synchronized driving with reversal for grey targets (12 frames total)
-            // MONO: 7 frames
-            // B/W: MONO (7) + REST in HOLD (5) = 12 frames
-            // Grey: MONO (7) + REVERSE (2) + SETTLE (3) = 12 frames
+            // Synchronized driving with reversal for grey targets
+            // MONO: 11 frames (drive 5, rest 2, drive 4)
+            // B/W: MONO (11) + REST in HOLD (5) = 16 frames
+            // Grey: MONO (11) + REVERSE (2) + SETTLE (5) = 18 frames
             // Frame counter encoding: [5:4]=video counter, [3:0]=stage frames
             // pixel_prev[1:0] = target (00=B, 01=DG, 10=LG, 11=W)
             // pixel_prev[3:2] = mindrv (MONO) or dc_bias (HOLD/GREY/DONE)
@@ -457,7 +457,11 @@ module pixel_processing(
                 // Drive towards binary target (MSB of grey level)
                 // pixel_prev[3:2] = mindrv during MONO stage
                 // pixel_prev[1:0] = target color
-                proc_output = pixel_prev[1] ? `DRIVE_WHITE : `DRIVE_BLACK;
+                // Drive pattern: drive 5, rest 2, drive 4 (frames 11-7 drive, 6-5 rest, 4-1 drive)
+                if (fg_frames > `FASTG_MONO_REST_HI || fg_frames < `FASTG_MONO_REST_LO)
+                    proc_output = pixel_prev[1] ? `DRIVE_WHITE : `DRIVE_BLACK;
+                else
+                    proc_output = `NO_DRIVE;  // Rest period
                 if ((proc_vin[3] != pixel_prev[1]) && (pixel_mindrv == 2'd0)) begin
                     // Binary direction changed mid-transition - restart with MONO target (video mode)
                     proc_bo = proc_vin[3] ? (
