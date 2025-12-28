@@ -185,7 +185,7 @@
 // Global doping schedule
 `define DOPING_EXTREME_FRAMES   2'd2    // Frames in extreme phase
 `define DOPING_REVERSE_FRAMES   2'd2    // Frames in reverse phase
-`define DOPING_WAIT_FRAMES      6'd25   // ~1 sec at 25fps between doping cycles
+`define DOPING_WAIT_FRAMES      6'd6    // ~250ms at 25fps between doping cycles
 
 // DC bias (2-bit, stored in pixel_prev[3:2] during DONE/HOLD/GREY)
 `define DC_BIAS_MAX             2'd3
