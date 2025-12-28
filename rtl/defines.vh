@@ -172,12 +172,12 @@
 `define DEFAULT_FBYTES      `DEFAULT_HACT * 4 * `DEFAULT_VACT * 2
 `define DEFAULT_MINDRV        2'd2
 
-// FAST_GREY timing (16 frames for both B/W and gray)
-`define FASTG_MONO_BW_FRAMES    4'd11   // B/W MONO duration (drive 5, rest 2, drive 4)
-`define FASTG_MONO_REST_HI      4'd6    // Rest when counter <= this (B/W only)
-`define FASTG_MONO_REST_LO      4'd5    // Rest when counter >= this (B/W only)
+// FAST_GREY timing - asymmetric B/W drive (all 16 frames total)
+`define FASTG_MONO_TO_BLACK     4'd4    // MONO to black (weaker drive)
+`define FASTG_MONO_TO_WHITE     4'd7    // MONO to white (stronger drive)
 `define FASTG_MONO_GREY_FRAMES  4'd7    // Gray MONO duration (continuous drive)
-`define FASTG_BW_REST_FRAMES    4'd5    // REST for B/W after MONO
+`define FASTG_REST_AFTER_BLACK  4'd12   // REST after driving to black (16 - 4)
+`define FASTG_REST_AFTER_WHITE  4'd9    // REST after driving to white (16 - 7)
 `define FASTG_REVERSE_FRAMES    4'd2    // REVERSE for gray (determines gray level)
 `define FASTG_SETTLE_FRAMES     4'd7    // SETTLE for gray after reverse
 `define FASTG_VIDEO_COOLDOWN    4'd13   // Cooldown in DONE (ensures ~1 sec before doping eligible)
