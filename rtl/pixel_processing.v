@@ -292,7 +292,12 @@ module pixel_processing(
     wire fg_video_mode = (pixel_stage == STAGE_DONE) && !fg_in_doping_mode && ((fg_counter >= 2'd3) || neighbor_video);
 
     // FAST_GREY helper wires (must be outside always block)
-    wire [3:0] mono_frames_base = `FASTG_MONO_FRAMES;
+    // B/W gets drive-rest-drive (11 frames), gray gets continuous drive (7 frames)
+    wire [3:0] mono_frames_bw = `FASTG_MONO_BW_FRAMES;
+    wire [3:0] mono_frames_grey = `FASTG_MONO_GREY_FRAMES;
+    wire [3:0] mono_frames_base = fg_is_grey_target ? mono_frames_grey : mono_frames_bw;
+    // Check if stored target is gray (for STAGE_MONO rest pattern)
+    wire stored_target_is_grey = (pixel_prev[1] != pixel_prev[0]);
     // STAGE_DONE helper wires
     wire fg_truly_idle = (fg_counter == 2'd0) && (fg_frames == 4'd0);
     // 3-bit doping_count: {fg_counter[1:0], fg_frames[0]} when in doping mode
@@ -446,9 +451,8 @@ module pixel_processing(
         end
         BASEMODE_FAST_GREY: begin
             // Synchronized driving with reversal for grey targets
-            // MONO: 11 frames (drive 5, rest 2, drive 4)
-            // B/W: MONO (11) + REST in HOLD (5) = 16 frames
-            // Grey: MONO (11) + REVERSE (2) + SETTLE (5) = 18 frames
+            // B/W: MONO 11 (drive 5, rest 2, drive 4) + REST 5 = 16 frames
+            // Gray: MONO 7 (continuous) + REVERSE 2 + SETTLE 3 = 12 frames
             // Frame counter encoding: [5:4]=video counter, [3:0]=stage frames
             // pixel_prev[1:0] = target (00=B, 01=DG, 10=LG, 11=W)
             // pixel_prev[3:2] = mindrv (MONO) or dc_bias (HOLD/GREY/DONE)
@@ -457,11 +461,20 @@ module pixel_processing(
                 // Drive towards binary target (MSB of grey level)
                 // pixel_prev[3:2] = mindrv during MONO stage
                 // pixel_prev[1:0] = target color
-                // Drive pattern: drive 5, rest 2, drive 4 (frames 11-7 drive, 6-5 rest, 4-1 drive)
-                if (fg_frames > `FASTG_MONO_REST_HI || fg_frames < `FASTG_MONO_REST_LO)
+                // B/W: drive 5, rest 2, drive 4 (11 frames)
+                // Gray: continuous drive (7 frames)
+                if (stored_target_is_grey) begin
+                    // Gray target: continuous drive
                     proc_output = pixel_prev[1] ? `DRIVE_WHITE : `DRIVE_BLACK;
-                else
-                    proc_output = `NO_DRIVE;  // Rest period
+                end
+                else if (fg_frames > `FASTG_MONO_REST_HI || fg_frames < `FASTG_MONO_REST_LO) begin
+                    // B/W target: drive phase
+                    proc_output = pixel_prev[1] ? `DRIVE_WHITE : `DRIVE_BLACK;
+                end
+                else begin
+                    // B/W target: rest phase
+                    proc_output = `NO_DRIVE;
+                end
                 if ((proc_vin[3] != pixel_prev[1]) && (pixel_mindrv == 2'd0)) begin
                     // Binary direction changed mid-transition - restart with MONO target (video mode)
                     proc_bo = proc_vin[3] ? (
