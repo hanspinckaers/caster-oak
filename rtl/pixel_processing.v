@@ -451,10 +451,10 @@ module pixel_processing(
             end
         end
         BASEMODE_FAST_GREY: begin
-            // Synchronized driving with reversal for grey targets (all 16 frames)
-            // To black: MONO 4 + REST 12 = 16 frames
-            // To white: MONO 7 + REST 9 = 16 frames
-            // Gray: MONO 7 + REVERSE 2 + SETTLE 7 = 16 frames
+            // Synchronized driving with reversal for grey targets
+            // To black: MONO 4 + REST 5 = 9 frames
+            // To white: MONO 7 + REST 5 = 12 frames
+            // Gray: MONO 7 + REVERSE 2 + SETTLE 3 = 12 frames
             // Frame counter encoding: [5:4]=video counter, [3:0]=stage frames
             // pixel_prev[1:0] = target (00=B, 01=DG, 10=LG, 11=W)
             // pixel_prev[3:2] = mindrv (MONO) or dc_bias (HOLD/GREY/DONE)
@@ -476,12 +476,8 @@ module pixel_processing(
                     // dc_bias starts at 0 when entering HOLD/GREY
                     if (fg_is_grey_target)
                         proc_bo = {proc_bi[15:12], STAGE_GREY, fg_counter, `FASTG_REVERSE_FRAMES + `FASTG_SETTLE_FRAMES, 2'b00, proc_vin[3:2]};
-                    else if (pixel_prev[1])
-                        // Drove to white - shorter REST
-                        proc_bo = {proc_bi[15:12], STAGE_HOLD, fg_counter, `FASTG_REST_AFTER_WHITE, 2'b00, proc_vin[3:2]};
                     else
-                        // Drove to black - longer REST
-                        proc_bo = {proc_bi[15:12], STAGE_HOLD, fg_counter, `FASTG_REST_AFTER_BLACK, 2'b00, proc_vin[3:2]};
+                        proc_bo = {proc_bi[15:12], STAGE_HOLD, fg_counter, `FASTG_BW_REST_FRAMES, 2'b00, proc_vin[3:2]};
                 end
                 else begin
                     proc_bo = {proc_bi[15:12], STAGE_MONO, fg_counter, fg_frames_dec, pixel_mindrv_dec, proc_bi[1:0]};
@@ -495,8 +491,8 @@ module pixel_processing(
                 if (proc_vin[3] != pixel_prev[1]) begin
                     // Binary direction changed - restart MONO with mono target (video mode)
                     proc_bo = proc_vin[3] ? (
-                        {proc_bi[15:12], STAGE_MONO, fg_counter, `FASTG_MONO_BW_FRAMES, csr_mindrv, proc_vin_mono}
-                    ) : {proc_bi[15:12], STAGE_MONO, fg_counter, `FASTG_MONO_BW_FRAMES, csr_mindrv, proc_vin_mono};
+                        {proc_bi[15:12], STAGE_MONO, fg_counter, `FASTG_MONO_TO_WHITE, csr_mindrv, proc_vin_mono}
+                    ) : {proc_bi[15:12], STAGE_MONO, fg_counter, `FASTG_MONO_TO_BLACK, csr_mindrv, proc_vin_mono};
                 end
                 else if (fg_frames == 0) begin
                     // Enter DONE: preserve counter, set cooldown timer
@@ -517,8 +513,8 @@ module pixel_processing(
                     // Binary direction changed mid-grey - restart MONO with mono target (video mode)
                     proc_output = `NO_DRIVE;
                     proc_bo = proc_vin[3] ? (
-                        {proc_bi[15:12], STAGE_MONO, fg_counter, `FASTG_MONO_BW_FRAMES, csr_mindrv, proc_vin_mono}
-                    ) : {proc_bi[15:12], STAGE_MONO, fg_counter, `FASTG_MONO_BW_FRAMES, csr_mindrv, proc_vin_mono};
+                        {proc_bi[15:12], STAGE_MONO, fg_counter, `FASTG_MONO_TO_WHITE, csr_mindrv, proc_vin_mono}
+                    ) : {proc_bi[15:12], STAGE_MONO, fg_counter, `FASTG_MONO_TO_BLACK, csr_mindrv, proc_vin_mono};
                 end
                 else if (fg_frames == 0) begin
                     // Enter DONE: preserve counter, set cooldown timer, reset dc_bias
