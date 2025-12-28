@@ -291,11 +291,8 @@ module pixel_processing(
     // In doping mode, treat as non-video (fg_counter is doping_count, not video counter)
     wire fg_video_mode = (pixel_stage == STAGE_DONE) && !fg_in_doping_mode && ((fg_counter >= 2'd3) || neighbor_video);
 
-    // FAST_GREY overdrive helper wires (must be outside always block)
-    wire switching_dir = (proc_vin[3] != pixel_prev[1]);
+    // FAST_GREY helper wires (must be outside always block)
     wire [3:0] mono_frames_base = `FASTG_MONO_FRAMES;
-    wire [3:0] mono_frames_od = switching_dir ? (mono_frames_base + {2'b0, pixel_prev[3:2]}) : mono_frames_base;
-    wire [1:0] new_dc_bias = switching_dir ? 2'd0 : pixel_prev[3:2];
     // STAGE_DONE helper wires
     wire fg_truly_idle = (fg_counter == 2'd0) && (fg_frames == 4'd0);
     // 3-bit doping_count: {fg_counter[1:0], fg_frames[0]} when in doping mode
@@ -448,10 +445,10 @@ module pixel_processing(
             end
         end
         BASEMODE_FAST_GREY: begin
-            // Synchronized driving with reversal for grey targets (13 frames total)
-            // Base MONO: 6 frames, with 0-3 overdrive frames based on dc_bias
-            // B/W: MONO (6-9) + REST in HOLD (7-4) = 13 frames
-            // Grey: MONO (6-9) + REVERSE (2) + SETTLE (5-2) = 13 frames
+            // Synchronized driving with reversal for grey targets (12 frames total)
+            // MONO: 7 frames
+            // B/W: MONO (7) + REST in HOLD (5) = 12 frames
+            // Grey: MONO (7) + REVERSE (2) + SETTLE (3) = 12 frames
             // Frame counter encoding: [5:4]=video counter, [3:0]=stage frames
             // pixel_prev[1:0] = target (00=B, 01=DG, 10=LG, 11=W)
             // pixel_prev[3:2] = mindrv (MONO) or dc_bias (HOLD/GREY/DONE)
@@ -469,8 +466,7 @@ module pixel_processing(
                 end
                 else if (fg_frames == 0) begin
                     // MONO done - B/W goes to HOLD (REST), Grey goes to GREY (REVERSE+SETTLE)
-                    // Calculate REST/SETTLE based on how many MONO frames we used (for overdrive)
-                    // dc_bias starts at 0 when entering HOLD/GREY (overdrive already applied in MONO)
+                    // dc_bias starts at 0 when entering HOLD/GREY
                     if (fg_is_grey_target)
                         proc_bo = {proc_bi[15:12], STAGE_GREY, fg_counter, `FASTG_REVERSE_FRAMES + `FASTG_SETTLE_FRAMES, 2'b00, proc_vin[3:2]};
                     else
@@ -542,18 +538,19 @@ module pixel_processing(
                     // Video mode: 3+ changes within cooldown window, force mono
                     if (fg_video_mode) begin
                         proc_bo = proc_vin[3] ? (
-                            {proc_bi[15:12], STAGE_MONO, fg_counter, mono_frames_od, csr_mindrv, proc_vin_mono}
-                        ) : {proc_bi[15:12], STAGE_MONO, fg_counter, mono_frames_od, csr_mindrv, proc_vin_mono};
+                            {proc_bi[15:12], STAGE_MONO, fg_counter, mono_frames_base, csr_mindrv, proc_vin_mono}
+                        ) : {proc_bi[15:12], STAGE_MONO, fg_counter, mono_frames_base, csr_mindrv, proc_vin_mono};
                     end
                     // Same-side grey transition (W→LG or B→DG): skip MONO
                     else if (fg_is_grey_target && (proc_vin[3] == pixel_prev[1])) begin
-                        proc_bo = {proc_bi[15:12], STAGE_GREY, fg_counter_inc, `FASTG_REVERSE_FRAMES + `FASTG_SETTLE_FRAMES, new_dc_bias, proc_vin[3:2]};
+                        // Same-side grey target - skip MONO, go directly to GREY
+                        proc_bo = {proc_bi[15:12], STAGE_GREY, fg_counter_inc, `FASTG_REVERSE_FRAMES + `FASTG_SETTLE_FRAMES, 2'b00, proc_vin[3:2]};
                     end
                     else begin
-                        // Different side or B/W target: need MONO with possible overdrive
+                        // Different side or B/W target: need MONO
                         proc_bo = proc_vin[3] ? (
-                            {proc_bi[15:12], STAGE_MONO, fg_counter_inc, mono_frames_od, csr_mindrv, proc_vin[3:2]}
-                        ) : {proc_bi[15:12], STAGE_MONO, fg_counter_inc, mono_frames_od, csr_mindrv, proc_vin[3:2]};
+                            {proc_bi[15:12], STAGE_MONO, fg_counter_inc, mono_frames_base, csr_mindrv, proc_vin[3:2]}
+                        ) : {proc_bi[15:12], STAGE_MONO, fg_counter_inc, mono_frames_base, csr_mindrv, proc_vin[3:2]};
                     end
                 end
                 else begin

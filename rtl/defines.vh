@@ -172,11 +172,11 @@
 `define DEFAULT_FBYTES      `DEFAULT_HACT * 4 * `DEFAULT_VACT * 2
 `define DEFAULT_MINDRV        2'd2
 
-// FAST_GREY timing (13 frames total)
-`define FASTG_MONO_FRAMES       4'd6    // Base MONO duration
-`define FASTG_BW_REST_FRAMES    4'd7    // REST for B/W after MONO
+// FAST_GREY timing (12 frames total)
+`define FASTG_MONO_FRAMES       4'd7    // MONO duration
+`define FASTG_BW_REST_FRAMES    4'd5    // REST for B/W after MONO
 `define FASTG_REVERSE_FRAMES    4'd2    // REVERSE for gray (determines gray level)
-`define FASTG_SETTLE_FRAMES     4'd5    // SETTLE for gray after reverse
+`define FASTG_SETTLE_FRAMES     4'd3    // SETTLE for gray after reverse
 `define FASTG_VIDEO_COOLDOWN    4'd13   // Cooldown in DONE (ensures ~1 sec before doping eligible)
 
 // Global doping schedule
@@ -186,7 +186,6 @@
 
 // DC bias (2-bit, stored in pixel_prev[3:2] during DONE/HOLD/GREY)
 `define DC_BIAS_MAX             2'd3
-`define OVERDRIVE_MAX           2'd3
 
 //`define USE_BLUE_NOISE  // Use blue noise instead of bayer
 

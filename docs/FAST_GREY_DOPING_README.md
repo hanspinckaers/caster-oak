@@ -1,8 +1,8 @@
-# FAST_GREY Global Doping and Overdrive Compensation
+# FAST_GREY Global Doping
 
 ## Overview
 
-FAST_GREY mode now includes global doping pulses to prevent ghosting, with per-pixel DC bias tracking and dynamic overdrive compensation. This maintains image quality while keeping the display responsive.
+FAST_GREY mode includes global doping pulses for B/W pixels to prevent ghosting. DC bias is tracked per-pixel to limit doping pulses when bias is saturated.
 
 ## Problem Solved
 
@@ -11,7 +11,7 @@ E-ink displays accumulate charge over time when pixels stay at the same value. T
 - Reduced contrast over time
 - Uneven gray levels
 
-## Solution: Global Doping with Overdrive Compensation
+## Solution: Global Doping
 
 ### Global Doping Pulses
 
@@ -52,49 +52,20 @@ Each pixel tracks accumulated bias in 2 bits (0-3 levels):
 | 8-9s | Decay | 0 | 5 |
 | 9s+ | Stable | 0 | 5 |
 
-### Overdrive Based on Transition Timing
+### Transition Timing
 
-| Transition Time | dc_bias | Overdrive |
-|-----------------|---------|-----------|
-| ~2s after idle | 1 | 1 frame |
-| ~3s after idle | 2 | 2 frames |
-| ~4-6s after idle (peak) | 3 | 3 frames |
-| ~7s after idle | 2 | 2 frames |
-| ~8s after idle | 1 | 1 frame |
-| 9s+ after idle | 0 | 0 frames |
-
-### Dynamic Overdrive
-
-When a pixel switches direction (B→W or W→B), the accumulated dc_bias determines extra drive frames:
-
-| dc_bias | Overdrive | Description |
-|---------|-----------|-------------|
-| 0 | 0 frames | No compensation needed |
-| 1 | 1 frame | Weak bias compensation |
-| 2 | 2 frames | Medium bias compensation |
-| 3 | 3 frames | Strong bias compensation |
-
-### Timing Balance
-
-Total transition time stays constant at 13 frames. Overdrive borrows from rest/settle:
+Total transition time is 12 frames:
 
 **B/W Path (MONO + REST):**
-| dc_bias | MONO | REST | Total |
-|---------|------|------|-------|
-| 0 | 6 | 7 | 13 |
-| 1 | 7 | 6 | 13 |
-| 2 | 8 | 5 | 13 |
-| 3 | 9 | 4 | 13 |
+- MONO: 7 frames
+- REST: 5 frames
+- Total: 12 frames
 
 **Gray Path (MONO + REVERSE + SETTLE):**
-| dc_bias | MONO | REVERSE | SETTLE | Total |
-|---------|------|---------|--------|-------|
-| 0 | 6 | 2 | 5 | 13 |
-| 1 | 7 | 2 | 4 | 13 |
-| 2 | 8 | 2 | 3 | 13 |
-| 3 | 9 | 2 | 2 | 13 |
-
-REVERSE is fixed at 2 frames (determines gray level).
+- MONO: 7 frames
+- REVERSE: 2 frames (determines gray level)
+- SETTLE: 3 frames
+- Total: 12 frames
 
 ## Doping Mode and Eligibility
 
@@ -133,11 +104,11 @@ After any transition, ~1 second cooldown (`FASTG_VIDEO_COOLDOWN=13` frames) befo
 ### Key Constants (defines.vh)
 
 ```verilog
-// FAST_GREY timing (13 frames total)
-`define FASTG_MONO_FRAMES       4'd6    // Base MONO duration
-`define FASTG_BW_REST_FRAMES    4'd7    // REST for B/W after MONO
+// FAST_GREY timing (12 frames total)
+`define FASTG_MONO_FRAMES       4'd7    // MONO duration
+`define FASTG_BW_REST_FRAMES    4'd5    // REST for B/W after MONO
 `define FASTG_REVERSE_FRAMES    4'd2    // REVERSE for gray
-`define FASTG_SETTLE_FRAMES     4'd5    // SETTLE for gray after reverse
+`define FASTG_SETTLE_FRAMES     4'd3    // SETTLE for gray after reverse
 `define FASTG_VIDEO_COOLDOWN    4'd13   // Cooldown for doping immunity
 
 // Global doping schedule
@@ -147,7 +118,6 @@ After any transition, ~1 second cooldown (`FASTG_VIDEO_COOLDOWN=13` frames) befo
 
 // DC bias
 `define DC_BIAS_MAX             2'd3
-`define OVERDRIVE_MAX           2'd3
 ```
 
 ### Signal Flow
@@ -162,8 +132,7 @@ After any transition, ~1 second cooldown (`FASTG_VIDEO_COOLDOWN=13` frames) befo
 ## Benefits
 
 - **No ghosting**: Regular doping pulses prevent charge accumulation on B/W pixels
-- **Dynamic overdrive**: Compensates based on actual doping received
-- **Overdrive decay**: Long-idle pixels return to zero overdrive
-- **No timing penalty**: 13-frame total maintained via overdrive/rest tradeoff
+- **DC bias limiting**: Doping stops when dc_bias reaches max (3)
+- **Bias decay**: Long-idle pixels return to zero dc_bias
 - **Minimal complexity**: 2-bit dc_bias and 3-bit doping_count fit in existing state
 - **No gray flicker**: Gray pixels excluded from doping for visual stability
