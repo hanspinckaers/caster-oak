@@ -598,8 +598,14 @@ module pixel_processing(
                                 end
                             end
                         end
+                        else if (doping_active && doping_first_frame && (doping_count == 2'd3) && (dc_bias != 2'd0)) begin
+                            // Doping complete (count=3), decay dc_bias by 1 per cycle
+                            proc_output = `NO_DRIVE;
+                            proc_bo = {proc_bi[15:12], STAGE_DONE, doping_count, 4'd15,
+                                dc_bias - 2'd1, pixel_prev[1:0]};
+                        end
                         else begin
-                            // In doping mode but not active or not eligible - stay idle
+                            // In doping mode but not active or fully decayed - stay idle
                             proc_output = `NO_DRIVE;
                             proc_bo = proc_bi;
                         end
