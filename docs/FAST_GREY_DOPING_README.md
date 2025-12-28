@@ -15,28 +15,27 @@ E-ink displays accumulate charge over time when pixels stay at the same value. T
 
 ### Global Doping Pulses
 
-Every ~1 second, idle pixels receive doping pulses:
+Every ~1 second, idle B/W pixels receive doping pulses:
 - **B/W pixels**: 1 frame pulse (Black→drive black, White→drive white)
-- **Gray pixels**: 4-frame balanced sequence (2 extreme + 2 reverse)
+- **Gray pixels**: No doping (removed - too visually distracting)
 
-Gray pixels (DG, LG) are DC-balanced: extreme then reverse cancels out.
 B/W pixels accumulate +1 dc_bias per pulse.
 
 ### Doping Limits
 
-Doping stops after 3 cycles per idle period:
-- **All pixels**: Limited by `doping_count` (0-3), increments each cycle
+Doping stops after 5 cycles per idle period:
+- **B/W pixels**: Limited by `doping_count` (0-5, 3-bit), increments each cycle
 - **B/W pixels**: Also limited by `dc_bias` (stops if dc_bias=3)
-- **Gray pixels**: Only limited by `doping_count` (dc_bias doesn't block gray)
+- **Gray pixels**: No doping at all
 
 ### DC Bias Tracking and Decay
 
 Each pixel tracks accumulated bias in 2 bits (0-3 levels):
 - B/W pixels: +1 per doping pulse
-- Gray pixels: No change (balanced doping)
+- Gray pixels: No change (no doping)
 - Reset to 0 when overdrive is applied (direction switch)
 
-**Decay**: After doping completes (`doping_count=3`), dc_bias decays by 1 per doping cycle until it reaches 0.
+**Decay**: After doping completes (`doping_count=5`), dc_bias decays by 1 per doping cycle until it reaches 0.
 
 ### Idle Pixel Timeline (B/W)
 
@@ -46,10 +45,12 @@ Each pixel tracks accumulated bias in 2 bits (0-3 levels):
 | 1-2s | Doping pulse 1 | 1 | 1 |
 | 2-3s | Doping pulse 2 | 2 | 2 |
 | 3-4s | Doping pulse 3 | 3 | 3 |
-| 4-5s | Decay | 2 | 3 |
-| 5-6s | Decay | 1 | 3 |
-| 6-7s | Decay | 0 | 3 |
-| 7s+ | Stable | 0 | 3 |
+| 4-5s | Doping pulse 4 (dc_bias capped) | 3 | 4 |
+| 5-6s | Doping pulse 5 (dc_bias capped) | 3 | 5 |
+| 6-7s | Decay | 2 | 5 |
+| 7-8s | Decay | 1 | 5 |
+| 8-9s | Decay | 0 | 5 |
+| 9s+ | Stable | 0 | 5 |
 
 ### Overdrive Based on Transition Timing
 
@@ -57,10 +58,10 @@ Each pixel tracks accumulated bias in 2 bits (0-3 levels):
 |-----------------|---------|-----------|
 | ~2s after idle | 1 | 1 frame |
 | ~3s after idle | 2 | 2 frames |
-| ~4s after idle (peak) | 3 | 3 frames |
-| ~5s after idle | 2 | 2 frames |
-| ~6s after idle | 1 | 1 frame |
-| 7s+ after idle | 0 | 0 frames |
+| ~4-6s after idle (peak) | 3 | 3 frames |
+| ~7s after idle | 2 | 2 frames |
+| ~8s after idle | 1 | 1 frame |
+| 9s+ after idle | 0 | 0 frames |
 
 ### Dynamic Overdrive
 
@@ -107,8 +108,8 @@ On entering doping mode, `fg_frames` is set to 15 (marker), and `fg_counter` bec
 
 ### Doping Mode State
 
-- `fg_frames = 15`: Doping mode active
-- `fg_counter`: Tracks `doping_count` (0-3)
+- `fg_frames[3:1] = 111` (fg_frames = 14 or 15): Doping mode active
+- `doping_count` (3-bit): `{fg_counter[1:0], fg_frames[0]}` tracks pulses (0-5)
 - Exits on any color change (returns to cooldown)
 
 ### Cooldown
@@ -124,7 +125,7 @@ After any transition, ~1 second cooldown (`FASTG_VIDEO_COOLDOWN=13` frames) befo
 [11:10] - Stage (DONE=0, MONO=1, HOLD=2, GREY=3)
 [9:4]   - Frame counter:
           - Cooldown mode: [5:4]=fg_counter (video), [3:0]=fg_frames (0-13)
-          - Doping mode: [5:4]=doping_count (0-3), [3:0]=15 (marker)
+          - Doping mode: [5:4]=doping_count[2:1], [3:1]=111 (marker), [0]=doping_count[0]
 [3:2]   - dc_bias (in HOLD/GREY/DONE) or mindrv (in MONO)
 [1:0]   - Target level (00=B, 01=DG, 10=LG, 11=W)
 ```
@@ -160,9 +161,9 @@ After any transition, ~1 second cooldown (`FASTG_VIDEO_COOLDOWN=13` frames) befo
 
 ## Benefits
 
-- **No ghosting**: Regular doping pulses prevent charge accumulation
+- **No ghosting**: Regular doping pulses prevent charge accumulation on B/W pixels
 - **Dynamic overdrive**: Compensates based on actual doping received
 - **Overdrive decay**: Long-idle pixels return to zero overdrive
 - **No timing penalty**: 13-frame total maintained via overdrive/rest tradeoff
-- **Minimal complexity**: 2-bit dc_bias and doping_count fit in existing state
-- **Gray fairness**: Gray pixels not blocked by inherited dc_bias
+- **Minimal complexity**: 2-bit dc_bias and 3-bit doping_count fit in existing state
+- **No gray flicker**: Gray pixels excluded from doping for visual stability

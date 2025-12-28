@@ -277,8 +277,9 @@ module pixel_processing(
     // FAST_GREY frame counter split: [5:4]=change counter, [3:0]=stage frames
     wire [1:0] fg_counter = pixel_framecnt[5:4];
     wire [3:0] fg_frames = pixel_framecnt[3:0];
-    // fg_frames = 15 means doping mode, fg_counter is doping_count (not video counter)
-    wire fg_in_doping_mode = (fg_frames == 4'd15);
+    // Doping mode: fg_frames[3:1] = 111 (fg_frames = 14 or 15)
+    // In doping mode, doping_count uses 3 bits: {fg_counter[1:0], fg_frames[0]}
+    wire fg_in_doping_mode = (fg_frames[3:1] == 3'b111);
     wire [1:0] fg_counter_for_video = fg_in_doping_mode ? 2'd0 : fg_counter;
     wire [1:0] fg_counter_inc = (fg_counter_for_video == 2'd3) ? 2'd3 : (fg_counter_for_video + 2'd1);
     wire [1:0] fg_counter_dec = (fg_counter == 2'd0) ? 2'd0 : (fg_counter - 2'd1);
@@ -297,9 +298,11 @@ module pixel_processing(
     wire [1:0] new_dc_bias = switching_dir ? 2'd0 : pixel_prev[3:2];
     // STAGE_DONE helper wires
     wire fg_truly_idle = (fg_counter == 2'd0) && (fg_frames == 4'd0);
-    wire [1:0] doping_count = fg_counter;
+    // 3-bit doping_count: {fg_counter[1:0], fg_frames[0]} when in doping mode
+    wire [2:0] doping_count = {fg_counter, fg_frames[0]};
+    wire [2:0] doping_count_inc = doping_count + 3'd1;
     wire [1:0] dc_bias_done = pixel_prev[3:2];
-    wire doping_count_ok = (doping_count != 2'd3);  // All pixels limited by doping_count
+    wire doping_count_ok = (doping_count != 3'd5);  // B/W limited to 5 pulses
     wire bw_bias_ok = (dc_bias_done != `DC_BIAS_MAX);  // B/W also limited by dc_bias
 
     always @(*) begin
@@ -527,7 +530,7 @@ module pixel_processing(
                 end
             end
             else if (pixel_stage == STAGE_DONE) begin
-                // fg_frames = 15: doping mode, fg_counter = doping_count (0-3)
+                // fg_frames[3:1] = 111: doping mode, doping_count = {fg_counter, fg_frames[0]} (0-5)
                 // fg_frames = 0-13: cooldown mode, fg_counter = video mode counter
                 // pixel_prev[3:2] = dc_bias (0-3) in DONE stage
                 // pixel_prev[1:0] = current color (00=B, 01=DG, 10=LG, 11=W)
@@ -558,14 +561,14 @@ module pixel_processing(
 
                     if (fg_in_doping_mode) begin
                         if (doping_active && doping_count_ok) begin
-                            // B/W pixels: 1 frame pulse only (first frame), also check dc_bias
-                            // Gray pixels: 4 frame balanced sequence, only limited by doping_count
+                            // B/W pixels only: 1 frame pulse (first frame), check dc_bias
+                            // Gray pixels: NO doping (too distracting)
                             if (pixel_prev[1:0] == 2'b00 && bw_bias_ok) begin
                                 // Black pixel: 1 frame pulse on first frame only
                                 proc_output = doping_first_frame ? `DRIVE_BLACK : `NO_DRIVE;
                                 if (doping_first_frame) begin
-                                    // Increment both doping_count and dc_bias
-                                    proc_bo = {proc_bi[15:12], STAGE_DONE, doping_count + 2'd1, 4'd15,
+                                    // Increment both doping_count (3-bit) and dc_bias
+                                    proc_bo = {proc_bi[15:12], STAGE_DONE, doping_count_inc[2:1], 3'b111, doping_count_inc[0],
                                         dc_bias_done + 2'd1, pixel_prev[1:0]};
                                 end
                                 else begin
@@ -576,8 +579,8 @@ module pixel_processing(
                                 // White pixel: 1 frame pulse on first frame only
                                 proc_output = doping_first_frame ? `DRIVE_WHITE : `NO_DRIVE;
                                 if (doping_first_frame) begin
-                                    // Increment both doping_count and dc_bias
-                                    proc_bo = {proc_bi[15:12], STAGE_DONE, doping_count + 2'd1, 4'd15,
+                                    // Increment both doping_count (3-bit) and dc_bias
+                                    proc_bo = {proc_bi[15:12], STAGE_DONE, doping_count_inc[2:1], 3'b111, doping_count_inc[0],
                                         dc_bias_done + 2'd1, pixel_prev[1:0]};
                                 end
                                 else begin
@@ -585,21 +588,9 @@ module pixel_processing(
                                 end
                             end
                             else if (pixel_prev[1] != pixel_prev[0]) begin
-                                // Gray (01 or 10): 4 frame balanced sequence, no dc_bias check
-                                if (doping_phase == 1'b0) begin
-                                    proc_output = pixel_prev[0] ? `DRIVE_BLACK : `DRIVE_WHITE;
-                                end
-                                else begin
-                                    proc_output = pixel_prev[1] ? `DRIVE_BLACK : `DRIVE_WHITE;
-                                end
-                                // Increment doping_count on first frame (once per cycle)
-                                if (doping_first_frame) begin
-                                    proc_bo = {proc_bi[15:12], STAGE_DONE, doping_count + 2'd1, 4'd15,
-                                        dc_bias_done, pixel_prev[1:0]};
-                                end
-                                else begin
-                                    proc_bo = proc_bi;  // Keep state on non-first frames
-                                end
+                                // Gray (01 or 10): NO doping - just stay idle
+                                proc_output = `NO_DRIVE;
+                                proc_bo = proc_bi;
                             end
                             else begin
                                 // B/W with dc_bias maxed (bw_bias_ok=false) - no pulse, stay in doping mode
@@ -607,10 +598,10 @@ module pixel_processing(
                                 proc_bo = proc_bi;
                             end
                         end
-                        else if (doping_active && doping_first_frame && (doping_count == 2'd3) && (dc_bias_done != 2'd0)) begin
-                            // Doping complete (count=3), decay dc_bias by 1 per cycle
+                        else if (doping_active && doping_first_frame && (doping_count == 3'd5) && (dc_bias_done != 2'd0)) begin
+                            // Doping complete (count=5), decay dc_bias by 1 per cycle
                             proc_output = `NO_DRIVE;
-                            proc_bo = {proc_bi[15:12], STAGE_DONE, doping_count, 4'd15,
+                            proc_bo = {proc_bi[15:12], STAGE_DONE, doping_count[2:1], 3'b111, doping_count[0],
                                 dc_bias_done - 2'd1, pixel_prev[1:0]};
                         end
                         else begin
@@ -622,37 +613,41 @@ module pixel_processing(
                     else if (fg_truly_idle && doping_first_frame) begin
                         // Truly idle and doping cycle starting - enter doping mode and pulse
                         // Only enter on first frame to avoid sitting idle in doping mode
+                        // B/W only - gray pixels don't enter doping mode (too distracting)
                         if (pixel_prev[1:0] == 2'b00) begin
                             // Black: first doping pulse if dc_bias not maxed
                             if (dc_bias_done != `DC_BIAS_MAX) begin
                                 proc_output = `DRIVE_BLACK;
-                                proc_bo = {proc_bi[15:12], STAGE_DONE, 2'd1, 4'd15,
+                                // Enter doping mode with count=1: {fg_counter=00, fg_frames=15}
+                                proc_bo = {proc_bi[15:12], STAGE_DONE, 2'd0, 4'd15,
                                     dc_bias_done + 2'd1, pixel_prev[1:0]};
                             end
                             else begin
-                                // dc_bias maxed, enter doping mode with count=3 (skip to decay)
+                                // dc_bias maxed, enter doping mode with count=5 (skip to decay)
+                                // count=5: {fg_counter=10, fg_frames=15}
                                 proc_output = `NO_DRIVE;
-                                proc_bo = {proc_bi[15:12], STAGE_DONE, 2'd3, 4'd15, proc_bi[3:0]};
+                                proc_bo = {proc_bi[15:12], STAGE_DONE, 2'd2, 4'd15, proc_bi[3:0]};
                             end
                         end
                         else if (pixel_prev[1:0] == 2'b11) begin
                             // White: first doping pulse if dc_bias not maxed
                             if (dc_bias_done != `DC_BIAS_MAX) begin
                                 proc_output = `DRIVE_WHITE;
-                                proc_bo = {proc_bi[15:12], STAGE_DONE, 2'd1, 4'd15,
+                                // Enter doping mode with count=1: {fg_counter=00, fg_frames=15}
+                                proc_bo = {proc_bi[15:12], STAGE_DONE, 2'd0, 4'd15,
                                     dc_bias_done + 2'd1, pixel_prev[1:0]};
                             end
                             else begin
-                                // dc_bias maxed, enter doping mode with count=3 (skip to decay)
+                                // dc_bias maxed, enter doping mode with count=5 (skip to decay)
+                                // count=5: {fg_counter=10, fg_frames=15}
                                 proc_output = `NO_DRIVE;
-                                proc_bo = {proc_bi[15:12], STAGE_DONE, 2'd3, 4'd15, proc_bi[3:0]};
+                                proc_bo = {proc_bi[15:12], STAGE_DONE, 2'd2, 4'd15, proc_bi[3:0]};
                             end
                         end
                         else begin
-                            // Gray: always do balanced doping, start with extreme phase
-                            proc_output = pixel_prev[0] ? `DRIVE_BLACK : `DRIVE_WHITE;
-                            proc_bo = {proc_bi[15:12], STAGE_DONE, 2'd1, 4'd15,
-                                dc_bias_done, pixel_prev[1:0]};
+                            // Gray (01 or 10): NO doping - stay idle, don't enter doping mode
+                            proc_output = `NO_DRIVE;
+                            proc_bo = proc_bi;
                         end
                     end
                     else if (fg_truly_idle && doping_active) begin
