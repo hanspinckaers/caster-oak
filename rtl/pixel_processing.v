@@ -489,8 +489,9 @@ module pixel_processing(
                     ) : {proc_bi[15:12], STAGE_MONO, fg_counter, `FASTG_MONO_FRAMES, csr_mindrv, proc_vin_mono};
                 end
                 else if (fg_frames == 0) begin
-                    // Enter DONE: preserve counter, set cooldown timer, preserve dc_bias
-                    proc_bo = {proc_bi[15:12], STAGE_DONE, fg_counter, `FASTG_VIDEO_COOLDOWN, proc_bi[3:0]};
+                    // Enter DONE: preserve counter, set cooldown timer
+                    // Use proc_vin[3:2] for color (not proc_bi) to catch same-side grey changes
+                    proc_bo = {proc_bi[15:12], STAGE_DONE, fg_counter, `FASTG_VIDEO_COOLDOWN, 2'b00, proc_vin[3:2]};
                 end
                 else begin
                     proc_bo = {proc_bi[15:12], STAGE_HOLD, fg_counter, fg_frames_dec, proc_bi[3:0]};
@@ -510,9 +511,9 @@ module pixel_processing(
                     ) : {proc_bi[15:12], STAGE_MONO, fg_counter, `FASTG_MONO_FRAMES, csr_mindrv, proc_vin_mono};
                 end
                 else if (fg_frames == 0) begin
-                    // Enter DONE: preserve counter, set cooldown timer, preserve dc_bias
+                    // Enter DONE: preserve counter, set cooldown timer, reset dc_bias
                     proc_output = `NO_DRIVE;
-                    proc_bo = {proc_bi[15:12], STAGE_DONE, fg_counter, `FASTG_VIDEO_COOLDOWN, proc_bi[3:0]};
+                    proc_bo = {proc_bi[15:12], STAGE_DONE, fg_counter, `FASTG_VIDEO_COOLDOWN, 2'b00, proc_bi[1:0]};
                 end
                 else begin
                     // REVERSE for first FASTG_REVERSE_FRAMES, then SETTLE (NO_DRIVE)
