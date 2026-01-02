@@ -283,15 +283,6 @@ module caster(
     // Counters for auto LUT mode, free running
     reg [5:0] al_framecnt;
 
-    // Global doping schedule for FAST_GREY DC bias management
-    // Doping sequence: 2 frames extreme (phase=0) + 2 frames reverse (phase=1)
-    // Then wait ~25 frames (~1 sec) before next cycle
-    reg [5:0] doping_wait_counter;
-    reg [2:0] doping_frame_counter;  // 0-3 for 4-frame sequence
-    reg doping_active;
-    reg doping_phase;  // 0 = extreme, 1 = reverse
-    wire doping_first_frame = doping_active && (doping_frame_counter == 3'd0);
-
     always @(posedge clk) begin
         case (scan_state)
         SCAN_IDLE: begin
@@ -324,33 +315,6 @@ module caster(
                 end
                 else begin
                     al_framecnt <= al_framecnt - 1;
-                end
-                // Update global doping state
-                if (doping_active) begin
-                    // In doping sequence
-                    if (doping_frame_counter == 3'd3) begin
-                        // Doping sequence complete, start wait period
-                        doping_active <= 1'b0;
-                        doping_frame_counter <= 3'd0;
-                        doping_wait_counter <= `DOPING_WAIT_FRAMES;
-                    end
-                    else begin
-                        doping_frame_counter <= doping_frame_counter + 3'd1;
-                        // Phase 0 for frames 0-1, phase 1 for frames 2-3
-                        doping_phase <= (doping_frame_counter >= 3'd1);
-                    end
-                end
-                else begin
-                    // Waiting between doping cycles
-                    if (doping_wait_counter == 0) begin
-                        // Start new doping sequence
-                        doping_active <= 1'b1;
-                        doping_frame_counter <= 3'd0;
-                        doping_phase <= 1'b0;
-                    end
-                    else begin
-                        doping_wait_counter <= doping_wait_counter - 6'd1;
-                    end
                 end
             end
             else begin
@@ -389,11 +353,6 @@ module caster(
             op_state <= `OP_INIT;
             op_framecnt <= OP_INIT_LENGTH;
             al_framecnt <= 0;
-            // Start with doping inactive, will trigger after wait period
-            doping_wait_counter <= `DOPING_WAIT_FRAMES;
-            doping_frame_counter <= 3'd0;
-            doping_active <= 1'b0;
-            doping_phase <= 1'b0;
         end
     end
 
@@ -879,10 +838,7 @@ module caster(
                 .op_param(op_param),
                 .op_framecnt(op_framecnt),
                 .al_framecnt(al_framecnt),
-                .neighbor_video(neighbor_video[i]),
-                .doping_active(doping_active),
-                .doping_phase(doping_phase),
-                .doping_first_frame(doping_first_frame)
+                .neighbor_video(neighbor_video[i])
             );
 
             // Output
