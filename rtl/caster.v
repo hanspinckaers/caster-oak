@@ -283,6 +283,11 @@ module caster(
     // Counters for auto LUT mode, free running
     reg [5:0] al_framecnt;
 
+    // Global doping pulse - every ~5 seconds (125 frames at 25fps)
+    reg [7:0] doping_counter;
+    reg doping_pulse;
+    localparam DOPING_INTERVAL = 8'd125;
+
     always @(posedge clk) begin
         case (scan_state)
         SCAN_IDLE: begin
@@ -315,6 +320,15 @@ module caster(
                 end
                 else begin
                     al_framecnt <= al_framecnt - 1;
+                end
+                // Update global doping pulse
+                if (doping_counter == 0) begin
+                    doping_counter <= DOPING_INTERVAL;
+                    doping_pulse <= 1'b1;
+                end
+                else begin
+                    doping_counter <= doping_counter - 8'd1;
+                    doping_pulse <= 1'b0;
                 end
             end
             else begin
@@ -353,6 +367,8 @@ module caster(
             op_state <= `OP_INIT;
             op_framecnt <= OP_INIT_LENGTH;
             al_framecnt <= 0;
+            doping_counter <= DOPING_INTERVAL;
+            doping_pulse <= 1'b0;
         end
     end
 
@@ -437,8 +453,13 @@ module caster(
 
     // STAGE 2
     reg s2_active;
-    always @(posedge clk)
+    reg [10:0] s2_x_cnt;  // Pipeline coordinates to match bi_fifo latency
+    reg [10:0] s2_v_cnt;
+    always @(posedge clk) begin
         s2_active <= s1_active;
+        s2_x_cnt <= h_cnt_offset;
+        s2_v_cnt <= v_cnt_offset;
+    end
 
     // OSD overlay
     wire [3:0] s2_osd_overlay = h_cnt_offset[0] ? osd_rd[7:4] : osd_rd[3:0];
@@ -653,12 +674,14 @@ module caster(
     reg [63:0] s3_bi_pixel;
     reg [15:0] s3_vin_pixel;
     reg [3:0] s3_op_valid;
-    reg [10:0] s3_x_cnt;  // Pipeline x counter for video detection
+    reg [10:0] s3_x_cnt;  // Pipeline x counter for video detection (0-based)
+    reg [10:0] s3_v_cnt;  // Pipeline v counter for video detection (0-based)
     always @(posedge clk) begin
         s3_vin_pixel <= s2_vin_selected_y4;
         s3_bi_pixel <= bi_pixel;
         s3_op_valid <= s2_op_valid;
-        s3_x_cnt <= scan_h_cnt;
+        s3_x_cnt <= s2_x_cnt;  // Use pipelined coordinates to align with bi_pixel
+        s3_v_cnt <= s2_v_cnt;
     end
 
     // STAGE 3
@@ -737,6 +760,7 @@ module caster(
     reg [3:0] s4_pixel_r2_dithered;
     reg [3:0] s4_op_valid;
     reg [10:0] s4_x_cnt;  // Pipeline x counter for video detection
+    reg [10:0] s4_v_cnt;  // Pipeline v counter for video detection
 
     always @(posedge clk) begin
         s4_vin_pixel <= s3_vin_pixel;
@@ -748,6 +772,7 @@ module caster(
         s4_pixel_r2_dithered <= s3_pixel_r2_dithered;
         s4_op_valid <= s3_op_valid;
         s4_x_cnt <= s3_x_cnt;
+        s4_v_cnt <= s3_v_cnt;
     end
 
     // STAGE 4
@@ -757,52 +782,81 @@ module caster(
     end
 
     // =========================================================================
-    // Video Mode Neighbor Detection
-    // Propagate video mode to neighboring pixels for smoother video regions
+    // Video Mode Detection - 64x64 Block Based with 3 Second Persistence
     // =========================================================================
 
-    // Extract video mode flag from each pixel's state
-    // For FAST_GREY mode: video mode when fg_counter >= 3 (bits [9:8] of state)
-    // Also check if mode is FAST_GREY (bits [15:12] = 4'b1011)
-    wire [3:0] cur_video_flags;
+    // Block dimensions: 64x64 pixels, power-of-2 grid for simple addressing
+    // Max screen: 4096x4096 -> 64x64 blocks = 4096 blocks (~3.5KB RAM)
+    // 2200x1648 screen -> 35x26 blocks, easily fits
+    // Each block has a 7-bit decay counter (0-127 frames, ~5 sec max)
+
+    localparam VIDEO_BLOCK_DECAY = 7'd75;  // 3 seconds at 25fps
+
+    // Current pixel's block coordinates
+    // Use s4_x_cnt/s4_v_cnt which are pipelined offset coordinates (0-based during active)
+    // s4_x_cnt counts clock cycles (4 pixels each), s4_v_cnt counts scan lines
+    // For 64×64 visible pixel blocks:
+    //   X: 16 clocks × 4 pixels = 64 pixels (s4_x_cnt max ~550, /16 = 34 blocks)
+    //   Y: 128 scan lines ÷ 2 lines/row = 64 visible rows (s4_v_cnt max ~1650, /128 = 13 blocks)
+    // IMPORTANT: Must include bit 10 of s4_v_cnt to avoid overflow at line 1024!
+    wire [5:0] cur_block_x = s4_x_cnt[9:4];    // /16 clocks = 64 pixels, max 34
+    wire [5:0] cur_block_y = s4_v_cnt[10:7];   // /128 scan lines = 64 visible rows (RGBW), max 13
+    // Linear address: simple concatenation (64x64 grid)
+    wire [11:0] cur_block_addr = {cur_block_y, cur_block_x};
+
+    // Block video activity RAM - stores decay counter per block
+    // 64*64 = 4096 entries * 7 bits = 3.5KB, fits in block RAM
+    (* ram_style = "block" *)
+    reg [6:0] video_block_ram [0:4095];  // 64*64-1
+
+    // Detect video activity in current 4-pixel group
+    // Video activity: FAST_GREY + STAGE_DONE + fg_counter >= 3
+    wire [3:0] cur_video_activity;
     generate
         for (i = 0; i < 4; i = i + 1) begin: gen_video_flags
             wire [15:0] pix_state = s4_bi_pixel[i*16+:16];
             wire is_fast_grey = (pix_state[15:12] == 4'b1011);
             wire [1:0] fg_counter = pix_state[9:8];
             wire [1:0] fg_stage = pix_state[11:10];
-            // Video mode: FAST_GREY + STAGE_DONE (2'd0) + counter >= 3
-            assign cur_video_flags[i] = is_fast_grey && (fg_stage == 2'd0) && (fg_counter >= 2'd3);
+            // Video activity: FAST_GREY + STAGE_DONE + counter >= 3
+            assign cur_video_activity[i] = is_fast_grey && (fg_stage == 2'd0) && (fg_counter >= 2'd3);
         end
     endgenerate
 
-    // Horizontal neighbor: previous 4-pixel group
-    reg [3:0] prev_video_flags;
+    wire any_video_activity = |cur_video_activity;
+
+    // Pipeline stage: register address and activity to align with RAM read
+    reg [11:0] cur_block_addr_d;
+    reg any_video_activity_d;
+    reg s4_active_d;
     always @(posedge clk) begin
-        if (s4_active)
-            prev_video_flags <= cur_video_flags;
+        cur_block_addr_d <= cur_block_addr;
+        any_video_activity_d <= any_video_activity;
+        s4_active_d <= s4_active;
     end
 
-    // Vertical neighbor: line buffer storing video flags from previous line
-    localparam VIDEO_LINE_BUF_DEPTH = 550;  // 2200 pixels / 4 pixels per clock
-    localparam VIDEO_LINE_BUF_AW = 10;      // clog2(550) = 10
-    (* ram_style = "distributed" *)
-    reg [3:0] video_line_buffer [0:VIDEO_LINE_BUF_DEPTH-1];
-    wire [VIDEO_LINE_BUF_AW-1:0] video_buf_addr = s4_x_cnt[VIDEO_LINE_BUF_AW-1:0];
-    wire [3:0] prev_line_video_flags = video_line_buffer[video_buf_addr];
-
+    // Read current block's decay counter (1 cycle latency)
+    reg [6:0] cur_block_counter;
     always @(posedge clk) begin
         if (s4_active)
-            video_line_buffer[video_buf_addr] <= cur_video_flags;
+            cur_block_counter <= video_block_ram[cur_block_addr];
     end
 
-    // Compute neighbor_video for each pixel
-    // Check: left neighbor, right neighbor (within group), prev group, prev line
-    wire [3:0] neighbor_video;
-    assign neighbor_video[0] = prev_video_flags[3] | cur_video_flags[1] | prev_line_video_flags[0];
-    assign neighbor_video[1] = cur_video_flags[0] | cur_video_flags[2] | prev_line_video_flags[1];
-    assign neighbor_video[2] = cur_video_flags[1] | cur_video_flags[3] | prev_line_video_flags[2];
-    assign neighbor_video[3] = cur_video_flags[2] | prev_line_video_flags[3];  // No right neighbor yet
+    // Update block counter: reset to max on activity, else decay
+    // Use delayed signals to match RAM read latency
+    wire [6:0] new_block_counter = any_video_activity_d ? VIDEO_BLOCK_DECAY :
+                                   (cur_block_counter > 0) ? (cur_block_counter - 7'd1) : 7'd0;
+
+    always @(posedge clk) begin
+        if (s4_active_d)
+            video_block_ram[cur_block_addr_d] <= new_block_counter;
+    end
+
+    // neighbor_video: true if current block has active video (counter > 0)
+    // DISABLED: Video detection causes issues, disable for now
+    wire block_video_active = (cur_block_counter > 0);
+    // wire [3:0] neighbor_video = {4{block_video_active}};
+    wire [3:0] neighbor_video = 4'b0000;  // Disabled
 
     wire [7:0] pixel_comb;
     wire [63:0] bo_pixel_comb;
@@ -838,7 +892,8 @@ module caster(
                 .op_param(op_param),
                 .op_framecnt(op_framecnt),
                 .al_framecnt(al_framecnt),
-                .neighbor_video(neighbor_video[i])
+                .neighbor_video(neighbor_video[i]),
+                .doping_pulse(doping_pulse)
             );
 
             // Output
