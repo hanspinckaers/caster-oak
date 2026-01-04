@@ -300,6 +300,10 @@ module pixel_processing(
 
     // FAST_GREY helper: check if target is grey (01 or 10)
     wire fg_is_grey_target = (proc_vin[3:2] == 2'b01) || (proc_vin[3:2] == 2'b10);
+    // Check if source (current position) is grey
+    wire fg_is_grey_source = (pixel_prev[1:0] == 2'b01) || (pixel_prev[1:0] == 2'b10);
+    // Grey involved: either source or target is grey (these cause haze on interruption)
+    wire fg_grey_involved = fg_is_grey_target || fg_is_grey_source;
     // MONO frames: 6 for all targets (reduced from 7)
     wire [3:0] fg_mono_frames_2w = 4'd6;
     wire [3:0] fg_mono_frames_2b = 4'd6;
@@ -311,19 +315,13 @@ module pixel_processing(
     wire [1:0] fg_counter_inc = (fg_counter == 2'd3) ? 2'd3 : (fg_counter + 2'd1);
     wire [1:0] fg_counter_dec = (fg_counter == 2'd0) ? 2'd0 : (fg_counter - 2'd1);
     wire [3:0] fg_frames_dec = fg_frames - 4'd1;
-    // Mid-transition direction change: asymmetric reversal
-    // White overdrive causes bounce-back haze, so black gets +1 frame compensation
-    // | Driven | → White | → Black |
-    // |--------|---------|---------|
-    // | 2      | 2       | 3       |
-    // | 3      | 3       | 4       |
-    // | 4      | 4       | 5       |
-    // | 5      | 5       | 6       |
-    wire [3:0] fg_frames_driven = (fg_frames >= 4'd6) ? 4'd0 : (4'd6 - fg_frames);
-    wire [3:0] fg_frames_2w = fg_frames_driven;           // driven frames
-    wire [3:0] fg_frames_2b = fg_frames_driven + 4'd1;    // driven + 1 frames
-    // Video mode: 3+ changes within cooldown window (per-pixel only)
-    // Forces mono extremes (B/W), blocks mid-drive reversals, skips grey phase
+    // Mid-transition direction change: original fast formula
+    // Reverses proportional to frames remaining (fast response for typing)
+    wire [3:0] fg_frames_2w = FASTM_B2W_FRAMES[3:0] - fg_frames + 4'd1;
+    wire [3:0] fg_frames_2b = FASTM_W2B_FRAMES[3:0] - fg_frames + 4'd1;
+    // Video mode: 3+ grey interruptions within cooldown window (per-pixel only)
+    // Only triggers for grey-related haze, not B/W transitions
+    // Forces mono extremes (B/W), blocks mid-drive reversals for grey, skips grey phase
     wire fg_video_mode = (pixel_stage == STAGE_DONE) && (fg_counter >= 2'd3);
 
     always @(*) begin
@@ -484,16 +482,15 @@ module pixel_processing(
                 // - Direction changed (proc_vin[3] != pixel_prev[1])
                 // - Not in minimum drive period (pixel_mindrv == 0)
                 // - Actually mid-drive, not first frame (fg_frames <= 4 means driven 2+ frames)
-                // - Not in video mode (fg_counter < 2) - video mode completes drive to mono
-                //   Starting values: 6 from DONE, 7 from HOLD restart
-                if ((proc_vin[3] != pixel_prev[1]) && (pixel_mindrv == 2'd0) && (fg_frames <= 4'd4) && (fg_counter < 2'd3)) begin
+                // - For grey targets: not in video mode (video mode completes to mono extreme)
+                // - For B/W targets: always allow reversal (no haze issue)
+                if ((proc_vin[3] != pixel_prev[1]) && (pixel_mindrv == 2'd0) && (fg_frames <= 4'd4) &&
+                    !(fg_is_grey_target && (fg_counter >= 2'd3))) begin
                     // Binary direction changed mid-transition - proportional reversal
-                    // Use fewer frames for early reversals (particles barely moved),
-                    // more frames for late reversals (particles traveled far)
-                    // Increment fg_counter to track haze risk from repeated interruptions
+                    // Only increment fg_counter if grey is involved (grey causes haze)
                     proc_bo = proc_vin[3] ? (
-                        {proc_bi[15:12], STAGE_MONO, fg_counter_inc, fg_frames_2w, csr_mindrv, proc_vin_mono}
-                    ) : {proc_bi[15:12], STAGE_MONO, fg_counter_inc, fg_frames_2b, csr_mindrv, proc_vin_mono};
+                        {proc_bi[15:12], STAGE_MONO, (fg_grey_involved ? fg_counter_inc : fg_counter), fg_frames_2w, csr_mindrv, proc_vin_mono}
+                    ) : {proc_bi[15:12], STAGE_MONO, (fg_grey_involved ? fg_counter_inc : fg_counter), fg_frames_2b, csr_mindrv, proc_vin_mono};
                 end
                 else if (fg_frames == 0) begin
                     // MONO done
@@ -572,14 +569,16 @@ module pixel_processing(
                         ) : {proc_bi[15:12], STAGE_MONO, fg_counter, FASTM_W2B_FRAMES[3:0], csr_mindrv, proc_vin_mono};
                     end
                     // Same-side grey transition (W→LG or B→DG): skip MONO
+                    // No counter increment (not an interruption)
                     else if (fg_is_grey_target && (proc_vin[3] == pixel_prev[1])) begin
-                        proc_bo = {proc_bi[15:12], STAGE_GREY, fg_counter_inc, FASTG_B2G_FRAMES[3:0] + FASTG_SETTLE_FRAMES[3:0], 2'b00, proc_vin[3:2]};
+                        proc_bo = {proc_bi[15:12], STAGE_GREY, fg_counter, FASTG_B2G_FRAMES[3:0] + FASTG_SETTLE_FRAMES[3:0], 2'b00, proc_vin[3:2]};
                     end
                     else begin
-                        // Different side or B/W target: need MONO (6 frames for extremes, 7 for grey)
+                        // Different side or B/W target: need MONO
+                        // No counter increment (not an interruption, normal transition from DONE)
                         proc_bo = proc_vin[3] ? (
-                            {proc_bi[15:12], STAGE_MONO, fg_counter_inc, fg_mono_frames_2w, csr_mindrv, proc_vin[3:2]}
-                        ) : {proc_bi[15:12], STAGE_MONO, fg_counter_inc, fg_mono_frames_2b, csr_mindrv, proc_vin[3:2]};
+                            {proc_bi[15:12], STAGE_MONO, fg_counter, fg_mono_frames_2w, csr_mindrv, proc_vin[3:2]}
+                        ) : {proc_bi[15:12], STAGE_MONO, fg_counter, fg_mono_frames_2b, csr_mindrv, proc_vin[3:2]};
                     end
                 end
                 else begin
