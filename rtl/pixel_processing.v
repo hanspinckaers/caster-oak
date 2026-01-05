@@ -315,10 +315,12 @@ module pixel_processing(
     wire [1:0] fg_counter_inc = (fg_counter == 2'd3) ? 2'd3 : (fg_counter + 2'd1);
     wire [1:0] fg_counter_dec = (fg_counter == 2'd0) ? 2'd0 : (fg_counter - 2'd1);
     wire [3:0] fg_frames_dec = fg_frames - 4'd1;
-    // Mid-transition direction change: original fast formula
-    // Reverses proportional to frames remaining (fast response for typing)
-    wire [3:0] fg_frames_2w = FASTM_B2W_FRAMES[3:0] - fg_frames + 4'd1;
-    wire [3:0] fg_frames_2b = FASTM_W2B_FRAMES[3:0] - fg_frames + 4'd1;
+    // Mid-transition direction change: symmetrical + extra white frame
+    // Symmetrical: reverse same number of frames as driven
+    // Extra white: +1 frame when reversing to white (compensates for field effects)
+    wire [3:0] fg_frames_driven = (fg_frames >= 4'd6) ? 4'd0 : (4'd6 - fg_frames);
+    wire [3:0] fg_frames_2w = fg_frames_driven + 4'd1;    // driven + 1 (extra white)
+    wire [3:0] fg_frames_2b = fg_frames_driven;            // driven (symmetrical)
     // Video mode: 3+ grey interruptions within cooldown window (per-pixel only)
     // Only triggers for grey-related haze, not B/W transitions
     // Forces mono extremes (B/W), blocks mid-drive reversals for grey, skips grey phase
