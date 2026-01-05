@@ -487,11 +487,10 @@ module pixel_processing(
                 if ((proc_vin[3] != pixel_prev[1]) && (pixel_mindrv == 2'd0) && (fg_frames <= 4'd4) &&
                     !(fg_is_grey_target && (fg_counter >= 2'd3))) begin
                     // Binary direction changed mid-transition - proportional reversal
-                    // Only increment fg_counter if grey involved AND driven 3+ frames
-                    // (within 2 frames is fine - particles barely moved)
+                    // Only increment fg_counter if grey involved AND driven 2+ frames
                     proc_bo = proc_vin[3] ? (
-                        {proc_bi[15:12], STAGE_MONO, ((fg_grey_involved && fg_frames <= 4'd3) ? fg_counter_inc : fg_counter), fg_frames_2w, csr_mindrv, proc_vin_mono}
-                    ) : {proc_bi[15:12], STAGE_MONO, ((fg_grey_involved && fg_frames <= 4'd3) ? fg_counter_inc : fg_counter), fg_frames_2b, csr_mindrv, proc_vin_mono};
+                        {proc_bi[15:12], STAGE_MONO, ((fg_grey_involved && fg_frames <= 4'd4) ? fg_counter_inc : fg_counter), fg_frames_2w, csr_mindrv, proc_vin_mono}
+                    ) : {proc_bi[15:12], STAGE_MONO, ((fg_grey_involved && fg_frames <= 4'd4) ? fg_counter_inc : fg_counter), fg_frames_2b, csr_mindrv, proc_vin_mono};
                 end
                 else if (fg_frames == 0) begin
                     // MONO done
