@@ -490,14 +490,18 @@ module pixel_processing(
                     !(fg_is_grey_target && (fg_counter >= 2'd3))) begin
                     // Binary direction changed mid-transition - proportional reversal
                     // Only increment fg_counter if grey involved AND driven 2+ frames
+                    // Use mindrv=2'b11 to mark this was a mid-MONO reversal (skip GREY later)
                     proc_bo = proc_vin[3] ? (
-                        {proc_bi[15:12], STAGE_MONO, ((fg_grey_involved && fg_frames <= 4'd4) ? fg_counter_inc : fg_counter), fg_frames_2w, csr_mindrv, proc_vin_mono}
-                    ) : {proc_bi[15:12], STAGE_MONO, ((fg_grey_involved && fg_frames <= 4'd4) ? fg_counter_inc : fg_counter), fg_frames_2b, csr_mindrv, proc_vin_mono};
+                        {proc_bi[15:12], STAGE_MONO, ((fg_grey_involved && fg_frames <= 4'd4) ? fg_counter_inc : fg_counter), fg_frames_2w, 2'b11, proc_vin_mono}
+                    ) : {proc_bi[15:12], STAGE_MONO, ((fg_grey_involved && fg_frames <= 4'd4) ? fg_counter_inc : fg_counter), fg_frames_2b, 2'b11, proc_vin_mono};
                 end
                 else if (fg_frames == 0) begin
                     // MONO done
                     if ((fg_counter >= 2'd3) && fg_is_grey_target)
                         // Video mode with grey target: skip GREY, stay at mono extreme
+                        proc_bo = {proc_bi[15:12], STAGE_HOLD, fg_counter, FASTG_BW_REST_FRAMES[3:0], 2'b00, proc_bi[1:0]};
+                    else if (fg_is_grey_target && (pixel_mindrv == 2'b11))
+                        // Mid-MONO reversal for grey target: skip GREY to avoid ghosting
                         proc_bo = {proc_bi[15:12], STAGE_HOLD, fg_counter, FASTG_BW_REST_FRAMES[3:0], 2'b00, proc_bi[1:0]};
                     else if (fg_is_grey_target)
                         // Normal grey target: go to GREY for reverse drive
