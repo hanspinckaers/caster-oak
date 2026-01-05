@@ -321,10 +321,9 @@ module pixel_processing(
     wire [3:0] fg_frames_driven = (fg_frames >= 4'd6) ? 4'd0 : (4'd6 - fg_frames);
     wire [3:0] fg_frames_2w = (fg_frames_driven == 4'd2) ? 4'd3 : fg_frames_driven;
     wire [3:0] fg_frames_2b = fg_frames_driven;
-    // Video mode: 3+ grey interruptions within cooldown window (per-pixel only)
-    // Only triggers for grey-related haze, not B/W transitions
-    // Forces mono extremes (B/W), blocks mid-drive reversals for grey, skips grey phase
-    wire fg_video_mode = (pixel_stage == STAGE_DONE) && (fg_counter >= 2'd3);
+    // Video mode: DISABLED for testing reversal formula
+    // wire fg_video_mode = (pixel_stage == STAGE_DONE) && (fg_counter >= 2'd3);
+    wire fg_video_mode = 1'b0;
 
     always @(*) begin
         // Normal mode, init mode override later
