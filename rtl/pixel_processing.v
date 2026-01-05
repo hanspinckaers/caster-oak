@@ -315,12 +315,12 @@ module pixel_processing(
     wire [1:0] fg_counter_inc = (fg_counter == 2'd3) ? 2'd3 : (fg_counter + 2'd1);
     wire [1:0] fg_counter_dec = (fg_counter == 2'd0) ? 2'd0 : (fg_counter - 2'd1);
     wire [3:0] fg_frames_dec = fg_frames - 4'd1;
-    // Mid-transition direction change: symmetrical, with extra white only at 2 frames
-    // 2 frames driven: 3 white, 2 black (extra white for short interruptions)
-    // 3+ frames driven: symmetrical (same as driven)
+    // Mid-transition direction change: extra frames for both directions
+    // White: +1 at 2 frames driven (short interruption compensation)
+    // Black: +1 always (needs more frames to avoid ghosting)
     wire [3:0] fg_frames_driven = (fg_frames >= 4'd6) ? 4'd0 : (4'd6 - fg_frames);
     wire [3:0] fg_frames_2w = (fg_frames_driven == 4'd2) ? 4'd3 : fg_frames_driven;
-    wire [3:0] fg_frames_2b = fg_frames_driven;
+    wire [3:0] fg_frames_2b = fg_frames_driven + 4'd1;
     // Video mode: DISABLED for testing reversal formula
     // wire fg_video_mode = (pixel_stage == STAGE_DONE) && (fg_counter >= 2'd3);
     wire fg_video_mode = 1'b0;
@@ -592,17 +592,17 @@ module pixel_processing(
                         if (fg_frames > 4'd1) begin
                             // Doping countdown
                             proc_bo = {proc_bi[15:12], STAGE_DONE, 2'd2, fg_frames_dec, proc_bi[3:0]};
-                            // Black gets 3 frames of drive (frames 3, 2, and 1)
-                            if ((fg_frames == 4'd3 || fg_frames == 4'd2) && pixel_prev[1:0] == 2'b00)
+                            // Black gets 5 frames of drive (frames 5, 4, 3, 2, 1)
+                            if (fg_frames <= 4'd5 && pixel_prev[1:0] == 2'b00)
                                 proc_output = `DRIVE_BLACK;
-                            // White gets 2 frames of drive (frames 2 and 1)
-                            if (fg_frames == 4'd2 && pixel_prev[1:0] == 2'b11)
+                            // White gets 4 frames of drive (frames 4, 3, 2, 1)
+                            if (fg_frames <= 4'd4 && pixel_prev[1:0] == 2'b11)
                                 proc_output = `DRIVE_WHITE;
                         end
                         else if (fg_frames == 4'd1) begin
                             // Final frame of doping pulse
                             if (pixel_prev[1:0] == 2'b00) begin
-                                // Black - 3rd of 3 frames
+                                // Black - 5th of 5 frames
                                 proc_output = `DRIVE_BLACK;
                                 if (pixel_prev[3:2] == 2'b00)
                                     proc_bo = {proc_bi[15:12], STAGE_DONE, 2'd2, 4'd15, 2'b01, pixel_prev[1:0]};
@@ -610,7 +610,7 @@ module pixel_processing(
                                     proc_bo = {proc_bi[15:12], STAGE_DONE, 2'd0, 4'd0, 2'b10, pixel_prev[1:0]};
                             end
                             else if (pixel_prev[1:0] == 2'b11) begin
-                                // White - 2nd of 2 frames
+                                // White - 4th of 4 frames
                                 proc_output = `DRIVE_WHITE;
                                 if (pixel_prev[3:2] == 2'b00)
                                     proc_bo = {proc_bi[15:12], STAGE_DONE, 2'd2, 4'd15, 2'b01, pixel_prev[1:0]};
@@ -651,11 +651,11 @@ module pixel_processing(
                         end
                         else if (pixel_prev[3:2] == 2'b00 && (pixel_prev[1:0] == 2'b00 || pixel_prev[1:0] == 2'b11)) begin
                             // B/W pixel needs doping (phase=00): start per-pixel sequence
-                            // Black gets 3 frames, white gets 2 frames
+                            // Black gets 5 frames, white gets 4 frames
                             if (pixel_prev[1:0] == 2'b00)
-                                proc_bo = {proc_bi[15:12], STAGE_DONE, 2'd2, 4'd3, 2'b00, pixel_prev[1:0]};
+                                proc_bo = {proc_bi[15:12], STAGE_DONE, 2'd2, 4'd5, 2'b00, pixel_prev[1:0]};
                             else
-                                proc_bo = {proc_bi[15:12], STAGE_DONE, 2'd2, 4'd2, 2'b00, pixel_prev[1:0]};
+                                proc_bo = {proc_bi[15:12], STAGE_DONE, 2'd2, 4'd4, 2'b00, pixel_prev[1:0]};
                         end
                         else begin
                             // Gray pixel or already doped (phase=10) - stay idle
