@@ -284,8 +284,10 @@ module caster(
     reg [5:0] al_framecnt;
 
     // Global doping pulse - every ~5 seconds (125 frames at 25fps)
+    // 2 frames: black drives both, white drives last frame only
     reg [7:0] doping_counter;
     reg doping_pulse;
+    reg doping_last_frame;  // High on last frame of pulse (for white)
     localparam DOPING_INTERVAL = 8'd125;
 
     always @(posedge clk) begin
@@ -321,15 +323,16 @@ module caster(
                 else begin
                     al_framecnt <= al_framecnt - 1;
                 end
-                // Update global doping pulse
+                // Update global doping pulse (2 frames: black drives both, white drives last)
                 if (doping_counter == 0) begin
                     doping_counter <= DOPING_INTERVAL;
-                    doping_pulse <= 1'b1;
                 end
                 else begin
                     doping_counter <= doping_counter - 8'd1;
-                    doping_pulse <= 1'b0;
                 end
+                // Pulse active for 2 frames (counter 1 and 0)
+                doping_pulse <= (doping_counter <= 8'd1);
+                doping_last_frame <= (doping_counter == 8'd0);
             end
             else begin
                 scan_h_cnt <= scan_h_cnt + 1;
@@ -369,6 +372,7 @@ module caster(
             al_framecnt <= 0;
             doping_counter <= DOPING_INTERVAL;
             doping_pulse <= 1'b0;
+            doping_last_frame <= 1'b0;
         end
     end
 
@@ -893,7 +897,8 @@ module caster(
                 .op_framecnt(op_framecnt),
                 .al_framecnt(al_framecnt),
                 .neighbor_video(neighbor_video[i]),
-                .doping_pulse(doping_pulse)
+                .doping_pulse(doping_pulse),
+                .doping_last_frame(doping_last_frame)
             );
 
             // Output

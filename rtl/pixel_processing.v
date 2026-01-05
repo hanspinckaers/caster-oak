@@ -33,7 +33,8 @@ module pixel_processing(
     input  wire [7:0]  op_framecnt, // Current overall frame counter for state
     input  wire [5:0]  al_framecnt, // Auto LUT mode frame counter
     input  wire        neighbor_video, // Neighbor pixel is in video mode (FAST_GREY)
-    input  wire        doping_pulse    // Global doping pulse (1 frame every ~5 sec)
+    input  wire        doping_pulse,   // Global doping pulse (2 frames every ~5 sec)
+    input  wire        doping_last_frame // Last frame of doping pulse (for white)
 );
 
     // Pixel state: 16bits
@@ -642,11 +643,11 @@ module pixel_processing(
                         // Fully idle - check for doping triggers
                         // pixel_prev[3:2]: 00=needs doping, 01=in progress, 10=done
                         if (doping_pulse) begin
-                            // Global pulse: gentle 1-frame backup pulse for all idle B/W
+                            // Global pulse: 2 frames for black, 1 frame for white
                             if (pixel_prev[1:0] == 2'b00)
-                                proc_output = `DRIVE_BLACK;
-                            else if (pixel_prev[1:0] == 2'b11)
-                                proc_output = `DRIVE_WHITE;
+                                proc_output = `DRIVE_BLACK;  // Both frames
+                            else if (pixel_prev[1:0] == 2'b11 && doping_last_frame)
+                                proc_output = `DRIVE_WHITE;  // Last frame only
                             proc_bo = proc_bi;
                         end
                         else if (pixel_prev[3:2] == 2'b00 && (pixel_prev[1:0] == 2'b00 || pixel_prev[1:0] == 2'b11)) begin
