@@ -295,7 +295,7 @@ module bayer_dithering #(
     localparam [7:0] BIAS_2B_B = BIAS_2B + 8'd6;   // B needs +6 (was darkened by -5.7)
     localparam [7:0] BIAS_2B_W = BIAS_2B - 8'd2;   // W needs -2 (was brightened by +1.9)
     localparam [7:0] BIAS_2B_G = BIAS_2B - 8'd6;   // G needs -6 (was brightened by +5.6)
-    localparam [7:0] BIAS_2B_R = BIAS_2B + 8'd2;   // R needs +2 (was darkened by -1.9)
+    localparam [7:0] BIAS_2B_R = BIAS_2B - 8'd2;   // R reduced to cut red bias
 
     // Select bias based on CFA position (cfa_row: 0=BW, 1=GR)
     wire [7:0] bias_2b_02 = (cfa_row == 1'b0) ? BIAS_2B_B : BIAS_2B_G;  // B or G
