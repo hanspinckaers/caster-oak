@@ -669,7 +669,7 @@ module caster(
     ) bayer_dithering (
         .clk(clk),
         .rst(rst),
-        .vin(s2_pixel_linear_22),      // 2.2 degamma (same as FAST_MONO) for testing
+        .vin(s2_pixel_linear),         // 1.5 gamma for 2-bit FAST_GREY (brighter midtones)
         .vin_1b(s2_pixel_linear_22),   // 2.2 gamma for 1-bit FAST_MONO
         .vout_1b(s3_pixel_bayer_1b),   // 1-bit for FAST_MONO (3x3 Bayer)
         .vout_2b(s3_pixel_bayer_2b),   // 2-bit for FAST_GREY (4x4 CFA-balanced)

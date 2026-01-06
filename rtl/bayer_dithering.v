@@ -558,10 +558,24 @@ module bayer_dithering #(
     wire [7:0] bias_2b_02 = (cfa_row == 1'b0) ? BIAS_2B_B : BIAS_2B_G;
     wire [7:0] bias_2b_13 = (cfa_row == 1'b0) ? BIAS_2B_W : BIAS_2B_R;
 
-    wire [8:0] a0_2b = {1'b0, pix0} + {1'b0, bias_2b_02};
-    wire [8:0] a1_2b = {1'b0, pix1} + {1'b0, bias_2b_13};
-    wire [8:0] a2_2b = {1'b0, pix2} + {1'b0, bias_2b_02};
-    wire [8:0] a3_2b = {1'b0, pix3} + {1'b0, bias_2b_13};
+    // Adaptive bias: clamp to headroom to prevent saturation artifacts at highlights
+    // When pix + bias > 255, adder_sat clips asymmetrically causing darkening
+    // Solution: reduce bias near white so pix + bias <= 255
+    wire [7:0] headroom_0 = 8'd255 - pix0;
+    wire [7:0] headroom_1 = 8'd255 - pix1;
+    wire [7:0] headroom_2 = 8'd255 - pix2;
+    wire [7:0] headroom_3 = 8'd255 - pix3;
+
+    // Clamp bias to available headroom
+    wire [7:0] actual_bias_0 = (bias_2b_02 > headroom_0) ? headroom_0 : bias_2b_02;
+    wire [7:0] actual_bias_1 = (bias_2b_13 > headroom_1) ? headroom_1 : bias_2b_13;
+    wire [7:0] actual_bias_2 = (bias_2b_02 > headroom_2) ? headroom_2 : bias_2b_02;
+    wire [7:0] actual_bias_3 = (bias_2b_13 > headroom_3) ? headroom_3 : bias_2b_13;
+
+    wire [8:0] a0_2b = {1'b0, pix0} + {1'b0, actual_bias_0};
+    wire [8:0] a1_2b = {1'b0, pix1} + {1'b0, actual_bias_1};
+    wire [8:0] a2_2b = {1'b0, pix2} + {1'b0, actual_bias_2};
+    wire [8:0] a3_2b = {1'b0, pix3} + {1'b0, actual_bias_3};
 
     wire [3:0] c0_2b, c1_2b, c2_2b, c3_2b;
     // Use content-adaptive CFA-balanced offsets (halved for edges, full for smooth)

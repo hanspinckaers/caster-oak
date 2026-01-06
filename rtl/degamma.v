@@ -9,8 +9,9 @@
 // PARTICULAR PURPOSE. Please see the CERN-OHL-P v2 for applicable conditions
 //
 // degamma.v
-// Gentle gamma correction (gamma = 1.5) for e-ink display
-// Lighter than full sRGB degamma (2.2) to preserve midtone brightness
+// Hybrid gamma curve for e-ink display:
+// - Shadows/mids: gamma ~1.5 for brightness
+// - Highlights: steeper curve for better differentiation
 //
 `default_nettype none
 `timescale 1ns / 1ps
@@ -19,10 +20,11 @@ module degamma(
     output reg [7:0] out
 );
 
-    // Gamma 1.5 curve: out = (in/63)^1.5 * 255
-    // Gentler than sRGB (gamma 2.2), preserves more midtone detail
+    // Hybrid curve: gamma 1.5 for in<48, then stretched highlights
+    // Keeps bright midtones while expanding highlight dynamic range
     always @(in) begin
         case (in)
+        // Shadows: gamma 1.5 (unchanged)
         6'd0: out = 8'd0;
         6'd1: out = 8'd1;
         6'd2: out = 8'd1;
@@ -39,6 +41,7 @@ module degamma(
         6'd13: out = 8'd24;
         6'd14: out = 8'd27;
         6'd15: out = 8'd30;
+        // Mids: gamma 1.5 (unchanged)
         6'd16: out = 8'd33;
         6'd17: out = 8'd36;
         6'd18: out = 8'd39;
@@ -71,21 +74,23 @@ module degamma(
         6'd45: out = 8'd154;
         6'd46: out = 8'd159;
         6'd47: out = 8'd164;
-        6'd48: out = 8'd170;
-        6'd49: out = 8'd175;
-        6'd50: out = 8'd180;
-        6'd51: out = 8'd186;
-        6'd52: out = 8'd191;
-        6'd53: out = 8'd197;
-        6'd54: out = 8'd202;
-        6'd55: out = 8'd208;
-        6'd56: out = 8'd214;
-        6'd57: out = 8'd219;
-        6'd58: out = 8'd225;
-        6'd59: out = 8'd231;
-        6'd60: out = 8'd237;
-        6'd61: out = 8'd243;
-        6'd62: out = 8'd249;
+        // Highlights: compressed to expand range (48-63 maps to 168-255)
+        // More steps in output for better highlight differentiation
+        6'd48: out = 8'd168;
+        6'd49: out = 8'd173;
+        6'd50: out = 8'd178;
+        6'd51: out = 8'd183;
+        6'd52: out = 8'd188;
+        6'd53: out = 8'd194;
+        6'd54: out = 8'd200;
+        6'd55: out = 8'd206;
+        6'd56: out = 8'd212;
+        6'd57: out = 8'd220;
+        6'd58: out = 8'd228;
+        6'd59: out = 8'd236;
+        6'd60: out = 8'd244;
+        6'd61: out = 8'd250;
+        6'd62: out = 8'd253;
         6'd63: out = 8'd255;
         endcase
     end
