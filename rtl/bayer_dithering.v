@@ -543,7 +543,7 @@ module bayer_dithering #(
 
     // 2-bit path: uniform brightness bias for FAST_GREY
     // Per-CFA 4x4 matrix is already balanced - no color-specific bias needed
-    localparam [7:0] BIAS_2B = 8'd15;      // Base brightness boost
+    localparam [7:0] BIAS_2B = 8'd24;      // Base brightness boost (increased for better brightness)
 
     // Uniform bias for all CFA colors (matrix handles balance)
     wire [7:0] bias_2b_02 = BIAS_2B;  // B or G
@@ -781,10 +781,12 @@ module bayer_dithering #(
     // - Smooth areas (low gradient): full CFA offsets for better gradients
     // =========================================================================
 
-    wire [3:0] b0_adaptive = (max_grad_0 > EDGE_THRESH_LOW) ? b0_cfa_half : b0_cfa;
-    wire [3:0] b1_adaptive = (max_grad_1 > EDGE_THRESH_LOW) ? b1_cfa_half : b1_cfa;
-    wire [3:0] b2_adaptive = (max_grad_2 > EDGE_THRESH_LOW) ? b2_cfa_half : b2_cfa;
-    wire [3:0] b3_adaptive = (max_grad_3 > EDGE_THRESH_LOW) ? b3_cfa_half : b3_cfa;
+    // Content-adaptive dithering: halved bayer for smooth areas, NO dither for edges
+    // Edges get pure quantization (cleaner text), smooth gets halved bayer (subtle gradients)
+    wire [3:0] b0_adaptive = (max_grad_0 > EDGE_THRESH_LOW) ? 4'sd0 : b0_cfa_half;
+    wire [3:0] b1_adaptive = (max_grad_1 > EDGE_THRESH_LOW) ? 4'sd0 : b1_cfa_half;
+    wire [3:0] b2_adaptive = (max_grad_2 > EDGE_THRESH_LOW) ? 4'sd0 : b2_cfa_half;
+    wire [3:0] b3_adaptive = (max_grad_3 > EDGE_THRESH_LOW) ? 4'sd0 : b3_cfa_half;
 
     // =========================================================================
     // Soft Edge Detection with Gradient-Weighted Blending
