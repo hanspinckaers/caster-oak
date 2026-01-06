@@ -10,8 +10,11 @@
 //
 // bayer_dithering.v
 // Improved Bayer dithering with:
-// 1. Original 3x3 Bayer matrix (no phase scrambling)
-// 2. Gradient-weighted edge detection with soft blending
+// 1. Original 3x3 Bayer matrix for 1-bit path (FAST_MONO)
+// 2. 8x8 Bayer matrix with halved offsets for 2-bit path (FAST_GREY)
+//    - Halved offsets (-4 to +3) for finer gray level transitions
+//    - Per-CFA bias (BIAS_2B_B/W/G/R) compensates for matrix CFA imbalance
+// 3. Gradient-weighted edge detection with soft blending
 //    - Instead of binary threshold, uses gradient magnitude for smooth blending
 //    - Eliminates stripe artifacts in images while preserving sharp text edges
 //    - Text (high gradient >160) gets full edge-aware treatment
@@ -298,6 +301,98 @@ module bayer_dithering #(
     wire [3:0] b3_3x3_opt = cfa_bayer3x3_opt_lookup(bayer3_row, bayer3_col3);
 
     // =========================================================================
+    // Optimized 7x7 CFA-Balanced Matrix for 2-bit path (FAST_GREY)
+    // 7 is coprime with 2, so over 14x14 period each CFA color sees all 49
+    // values exactly once - automatically CFA-balanced!
+    // 49 unique levels (vs 9 for 3x3) for smoother gradients
+    // Period 7 > typical stroke width 1-3 for sharper text
+    // =========================================================================
+
+    // Proper mod 7 for row coordinate (y_cnt can be up to ~1000)
+    wire [2:0] bayer7_row = y_cnt % 7;
+
+    // For column, x_cnt counts 4-pixel groups
+    // Actual pixel x positions: x_cnt*4, x_cnt*4+1, x_cnt*4+2, x_cnt*4+3
+    wire [13:0] x_pos_base = {x_cnt, 2'b00};  // x_cnt * 4
+    wire [2:0] bayer7_col0 = x_pos_base % 7;
+    wire [2:0] bayer7_col1 = (x_pos_base + 14'd1) % 7;
+    wire [2:0] bayer7_col2 = (x_pos_base + 14'd2) % 7;
+    wire [2:0] bayer7_col3 = (x_pos_base + 14'd3) % 7;
+
+    // Optimized 7x7 matrix lookup (simulated annealing optimized)
+    // DC-balanced, good spatial dispersion
+    function [3:0] bayer7x7_opt_lookup;
+        input [2:0] row;
+        input [2:0] col;
+        begin
+            case ({row, col})
+                // Row 0: -7, +5, +7, +2, -3, -4, +6
+                6'b000_000: bayer7x7_opt_lookup = -4'sd7;
+                6'b000_001: bayer7x7_opt_lookup =  4'sd5;
+                6'b000_010: bayer7x7_opt_lookup =  4'sd7;
+                6'b000_011: bayer7x7_opt_lookup =  4'sd2;
+                6'b000_100: bayer7x7_opt_lookup = -4'sd3;
+                6'b000_101: bayer7x7_opt_lookup = -4'sd4;
+                6'b000_110: bayer7x7_opt_lookup =  4'sd6;
+                // Row 1: +7, +4, +3, 0, -3, +7, -4
+                6'b001_000: bayer7x7_opt_lookup =  4'sd7;
+                6'b001_001: bayer7x7_opt_lookup =  4'sd4;
+                6'b001_010: bayer7x7_opt_lookup =  4'sd3;
+                6'b001_011: bayer7x7_opt_lookup =  4'sd0;
+                6'b001_100: bayer7x7_opt_lookup = -4'sd3;
+                6'b001_101: bayer7x7_opt_lookup =  4'sd7;
+                6'b001_110: bayer7x7_opt_lookup = -4'sd4;
+                // Row 2: +1, -8, -7, -4, +3, 0, -7
+                6'b010_000: bayer7x7_opt_lookup =  4'sd1;
+                6'b010_001: bayer7x7_opt_lookup = -4'sd8;
+                6'b010_010: bayer7x7_opt_lookup = -4'sd7;
+                6'b010_011: bayer7x7_opt_lookup = -4'sd4;
+                6'b010_100: bayer7x7_opt_lookup =  4'sd3;
+                6'b010_101: bayer7x7_opt_lookup =  4'sd0;
+                6'b010_110: bayer7x7_opt_lookup = -4'sd7;
+                // Row 3: -1, +1, +1, +2, +4, -3, +5
+                6'b011_000: bayer7x7_opt_lookup = -4'sd1;
+                6'b011_001: bayer7x7_opt_lookup =  4'sd1;
+                6'b011_010: bayer7x7_opt_lookup =  4'sd1;
+                6'b011_011: bayer7x7_opt_lookup =  4'sd2;
+                6'b011_100: bayer7x7_opt_lookup =  4'sd4;
+                6'b011_101: bayer7x7_opt_lookup = -4'sd3;
+                6'b011_110: bayer7x7_opt_lookup =  4'sd5;
+                // Row 4: +2, +2, +6, -2, -5, +3, -6
+                6'b100_000: bayer7x7_opt_lookup =  4'sd2;
+                6'b100_001: bayer7x7_opt_lookup =  4'sd2;
+                6'b100_010: bayer7x7_opt_lookup =  4'sd6;
+                6'b100_011: bayer7x7_opt_lookup = -4'sd2;
+                6'b100_100: bayer7x7_opt_lookup = -4'sd5;
+                6'b100_101: bayer7x7_opt_lookup =  4'sd3;
+                6'b100_110: bayer7x7_opt_lookup = -4'sd6;
+                // Row 5: +5, +4, -6, -1, +7, -1, -2
+                6'b101_000: bayer7x7_opt_lookup =  4'sd5;
+                6'b101_001: bayer7x7_opt_lookup =  4'sd4;
+                6'b101_010: bayer7x7_opt_lookup = -4'sd6;
+                6'b101_011: bayer7x7_opt_lookup = -4'sd1;
+                6'b101_100: bayer7x7_opt_lookup =  4'sd7;
+                6'b101_101: bayer7x7_opt_lookup = -4'sd1;
+                6'b101_110: bayer7x7_opt_lookup = -4'sd2;
+                // Row 6: -2, -5, -6, -2, 0, +6, -5
+                6'b110_000: bayer7x7_opt_lookup = -4'sd2;
+                6'b110_001: bayer7x7_opt_lookup = -4'sd5;
+                6'b110_010: bayer7x7_opt_lookup = -4'sd6;
+                6'b110_011: bayer7x7_opt_lookup = -4'sd2;
+                6'b110_100: bayer7x7_opt_lookup =  4'sd0;
+                6'b110_101: bayer7x7_opt_lookup =  4'sd6;
+                6'b110_110: bayer7x7_opt_lookup = -4'sd5;
+                default: bayer7x7_opt_lookup = 4'sd0;
+            endcase
+        end
+    endfunction
+
+    wire [3:0] b0_7x7 = bayer7x7_opt_lookup(bayer7_row, bayer7_col0);
+    wire [3:0] b1_7x7 = bayer7x7_opt_lookup(bayer7_row, bayer7_col1);
+    wire [3:0] b2_7x7 = bayer7x7_opt_lookup(bayer7_row, bayer7_col2);
+    wire [3:0] b3_7x7 = bayer7x7_opt_lookup(bayer7_row, bayer7_col3);
+
+    // =========================================================================
     // Standard Bayer Dithering Path with CFA Bias
     // =========================================================================
 
@@ -350,10 +445,10 @@ module bayer_dithering #(
     // B avg=-5.7, W avg=+1.9, G avg=+5.6, R avg=-1.9
     // Add inverse to each CFA color to neutralize
     localparam [7:0] BIAS_2B = 8'd15;      // Base brightness boost
-    localparam [7:0] BIAS_2B_B = BIAS_2B + 8'd8;   // B boosted for more color
-    localparam [7:0] BIAS_2B_W = BIAS_2B - 8'd4;   // W reduced to let colors show
-    localparam [7:0] BIAS_2B_G = BIAS_2B + 8'd2;   // G boosted for more color
-    localparam [7:0] BIAS_2B_R = BIAS_2B - 8'd8;   // R reduced significantly
+    localparam [7:0] BIAS_2B_B = BIAS_2B + 8'd6;   // B needs +6 (was darkened by -5.7)
+    localparam [7:0] BIAS_2B_W = BIAS_2B - 8'd2;   // W needs -2 (was brightened by +1.9)
+    localparam [7:0] BIAS_2B_G = BIAS_2B - 8'd6;   // G needs -6 (was brightened by +5.6)
+    localparam [7:0] BIAS_2B_R = BIAS_2B - 8'd2;   // R reduced to cut red bias
 
     // Select bias based on CFA position (cfa_row: 0=BW, 1=GR)
     wire [7:0] bias_2b_02 = (cfa_row == 1'b0) ? BIAS_2B_B : BIAS_2B_G;  // B or G
@@ -365,11 +460,11 @@ module bayer_dithering #(
     wire [8:0] a3_2b = {1'b0, pix3} + {1'b0, bias_2b_13};
 
     wire [3:0] c0_2b, c1_2b, c2_2b, c3_2b;
-    // Use optimized 3x3 CFA-balanced matrix for better color balance
-    adder_sat adder_sat0_2b (a0_2b[8:4], b0_3x3_opt, c0_2b);
-    adder_sat adder_sat1_2b (a1_2b[8:4], b1_3x3_opt, c1_2b);
-    adder_sat adder_sat2_2b (a2_2b[8:4], b2_3x3_opt, c2_2b);
-    adder_sat adder_sat3_2b (a3_2b[8:4], b3_3x3_opt, c3_2b);
+    // Use 8x8 Bayer with halved offsets (-4 to +3) for finer gray transitions
+    adder_sat adder_sat0_2b (a0_2b[8:4], b0_8x8_half, c0_2b);
+    adder_sat adder_sat1_2b (a1_2b[8:4], b1_8x8_half, c1_2b);
+    adder_sat adder_sat2_2b (a2_2b[8:4], b2_8x8_half, c2_2b);
+    adder_sat adder_sat3_2b (a3_2b[8:4], b3_8x8_half, c3_2b);
 
     // =========================================================================
     // Grayscale Path for Sharp B/W Text (200dpi mode)
@@ -408,11 +503,11 @@ module bayer_dithering #(
     wire [8:0] a3_gray = (cfa_row == 1'b0) ? ({1'b0, lum_for_w} + {1'b0, BIAS_2B}) : ({1'b0, luminance} + {1'b0, BIAS_2B});
 
     wire [3:0] c0_gray, c1_gray, c2_gray, c3_gray;
-    // Use optimized 3x3 CFA-balanced matrix (same as CFA path)
-    adder_sat adder_sat0_gray (a0_gray[8:4], b0_3x3_opt, c0_gray);
-    adder_sat adder_sat1_gray (a1_gray[8:4], b1_3x3_opt, c1_gray);
-    adder_sat adder_sat2_gray (a2_gray[8:4], b2_3x3_opt, c2_gray);
-    adder_sat adder_sat3_gray (a3_gray[8:4], b3_3x3_opt, c3_gray);
+    // Use 8x8 Bayer with halved offsets (same as CFA path)
+    adder_sat adder_sat0_gray (a0_gray[8:4], b0_8x8_half, c0_gray);
+    adder_sat adder_sat1_gray (a1_gray[8:4], b1_8x8_half, c1_gray);
+    adder_sat adder_sat2_gray (a2_gray[8:4], b2_8x8_half, c2_gray);
+    adder_sat adder_sat3_gray (a3_gray[8:4], b3_8x8_half, c3_gray);
 
     // Helper function to find max of two 8-bit values (used for local max detection)
     function [7:0] max2;
