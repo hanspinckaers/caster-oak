@@ -11,9 +11,10 @@
 // bayer_dithering.v
 // Improved Bayer dithering with:
 // 1. Original 3x3 Bayer matrix for 1-bit path (FAST_MONO)
-// 2. 8x8 Bayer matrix with halved offsets for 2-bit path (FAST_GREY)
-//    - Halved offsets (-4 to +3) for finer gray level transitions
-//    - Per-CFA bias (BIAS_2B_B/W/G/R) compensates for matrix CFA imbalance
+// 2. Per-CFA balanced 8x8 matrix with content-adaptive offsets for 2-bit path (FAST_GREY)
+//    - Each CFA color (B,W,G,R) gets independent phase-shifted 4x4 Bayer pattern
+//    - Content-adaptive: halved offsets for text/edges, full for smooth gradients
+//    - See docs/PER_CFA_DITHERING.md for derivation
 // 3. Gradient-weighted edge detection with soft blending
 //    - Instead of binary threshold, uses gradient magnitude for smooth blending
 //    - Eliminates stripe artifacts in images while preserving sharp text edges
@@ -250,6 +251,106 @@ module bayer_dithering #(
     wire [3:0] b3_8x8_half = {b3_8x8[3], b3_8x8[3:1]};
 
     // =========================================================================
+    // Per-CFA Balanced 8x8 Bayer Matrix
+    // Each CFA color (B,W,G,R) sees an independent phase-shifted 4x4 Bayer
+    // This eliminates CFA color bias without needing per-color bias hacks
+    // See docs/PER_CFA_DITHERING.md for derivation
+    // =========================================================================
+
+    function [3:0] bayer8x8_cfa_lookup;
+        input [2:0] row;
+        input [2:0] col;
+        begin
+            case ({row, col})
+                // Row 0: B=-8, W=0, B=0, W=-8, B=-6, W=2, B=2, W=-6
+                6'b000_000: bayer8x8_cfa_lookup = -4'sd8;
+                6'b000_001: bayer8x8_cfa_lookup =  4'sd0;
+                6'b000_010: bayer8x8_cfa_lookup =  4'sd0;
+                6'b000_011: bayer8x8_cfa_lookup = -4'sd8;
+                6'b000_100: bayer8x8_cfa_lookup = -4'sd6;
+                6'b000_101: bayer8x8_cfa_lookup =  4'sd2;
+                6'b000_110: bayer8x8_cfa_lookup =  4'sd2;
+                6'b000_111: bayer8x8_cfa_lookup = -4'sd6;
+                // Row 1: G=-6, R=2, G=2, R=-6, G=-8, R=0, G=0, R=-8
+                6'b001_000: bayer8x8_cfa_lookup = -4'sd6;
+                6'b001_001: bayer8x8_cfa_lookup =  4'sd2;
+                6'b001_010: bayer8x8_cfa_lookup =  4'sd2;
+                6'b001_011: bayer8x8_cfa_lookup = -4'sd6;
+                6'b001_100: bayer8x8_cfa_lookup = -4'sd8;
+                6'b001_101: bayer8x8_cfa_lookup =  4'sd0;
+                6'b001_110: bayer8x8_cfa_lookup =  4'sd0;
+                6'b001_111: bayer8x8_cfa_lookup = -4'sd8;
+                // Row 2: B=4, W=-4, B=-4, W=4, B=6, W=-2, B=-2, W=6
+                6'b010_000: bayer8x8_cfa_lookup =  4'sd4;
+                6'b010_001: bayer8x8_cfa_lookup = -4'sd4;
+                6'b010_010: bayer8x8_cfa_lookup = -4'sd4;
+                6'b010_011: bayer8x8_cfa_lookup =  4'sd4;
+                6'b010_100: bayer8x8_cfa_lookup =  4'sd6;
+                6'b010_101: bayer8x8_cfa_lookup = -4'sd2;
+                6'b010_110: bayer8x8_cfa_lookup = -4'sd2;
+                6'b010_111: bayer8x8_cfa_lookup =  4'sd6;
+                // Row 3: G=6, R=-2, G=-2, R=6, G=4, R=-4, G=-4, R=4
+                6'b011_000: bayer8x8_cfa_lookup =  4'sd6;
+                6'b011_001: bayer8x8_cfa_lookup = -4'sd2;
+                6'b011_010: bayer8x8_cfa_lookup = -4'sd2;
+                6'b011_011: bayer8x8_cfa_lookup =  4'sd6;
+                6'b011_100: bayer8x8_cfa_lookup =  4'sd4;
+                6'b011_101: bayer8x8_cfa_lookup = -4'sd4;
+                6'b011_110: bayer8x8_cfa_lookup = -4'sd4;
+                6'b011_111: bayer8x8_cfa_lookup =  4'sd4;
+                // Row 4: B=-5, W=3, B=3, W=-5, B=-7, W=1, B=1, W=-7
+                6'b100_000: bayer8x8_cfa_lookup = -4'sd5;
+                6'b100_001: bayer8x8_cfa_lookup =  4'sd3;
+                6'b100_010: bayer8x8_cfa_lookup =  4'sd3;
+                6'b100_011: bayer8x8_cfa_lookup = -4'sd5;
+                6'b100_100: bayer8x8_cfa_lookup = -4'sd7;
+                6'b100_101: bayer8x8_cfa_lookup =  4'sd1;
+                6'b100_110: bayer8x8_cfa_lookup =  4'sd1;
+                6'b100_111: bayer8x8_cfa_lookup = -4'sd7;
+                // Row 5: G=-7, R=1, G=1, R=-7, G=-5, R=3, G=3, R=-5
+                6'b101_000: bayer8x8_cfa_lookup = -4'sd7;
+                6'b101_001: bayer8x8_cfa_lookup =  4'sd1;
+                6'b101_010: bayer8x8_cfa_lookup =  4'sd1;
+                6'b101_011: bayer8x8_cfa_lookup = -4'sd7;
+                6'b101_100: bayer8x8_cfa_lookup = -4'sd5;
+                6'b101_101: bayer8x8_cfa_lookup =  4'sd3;
+                6'b101_110: bayer8x8_cfa_lookup =  4'sd3;
+                6'b101_111: bayer8x8_cfa_lookup = -4'sd5;
+                // Row 6: B=7, W=-1, B=-1, W=7, B=5, W=-3, B=-3, W=5
+                6'b110_000: bayer8x8_cfa_lookup =  4'sd7;
+                6'b110_001: bayer8x8_cfa_lookup = -4'sd1;
+                6'b110_010: bayer8x8_cfa_lookup = -4'sd1;
+                6'b110_011: bayer8x8_cfa_lookup =  4'sd7;
+                6'b110_100: bayer8x8_cfa_lookup =  4'sd5;
+                6'b110_101: bayer8x8_cfa_lookup = -4'sd3;
+                6'b110_110: bayer8x8_cfa_lookup = -4'sd3;
+                6'b110_111: bayer8x8_cfa_lookup =  4'sd5;
+                // Row 7: G=5, R=-3, G=-3, R=5, G=7, R=-1, G=-1, R=7
+                6'b111_000: bayer8x8_cfa_lookup =  4'sd5;
+                6'b111_001: bayer8x8_cfa_lookup = -4'sd3;
+                6'b111_010: bayer8x8_cfa_lookup = -4'sd3;
+                6'b111_011: bayer8x8_cfa_lookup =  4'sd5;
+                6'b111_100: bayer8x8_cfa_lookup =  4'sd7;
+                6'b111_101: bayer8x8_cfa_lookup = -4'sd1;
+                6'b111_110: bayer8x8_cfa_lookup = -4'sd1;
+                6'b111_111: bayer8x8_cfa_lookup =  4'sd7;
+                default: bayer8x8_cfa_lookup = 4'sd0;
+            endcase
+        end
+    endfunction
+
+    wire [3:0] b0_cfa = bayer8x8_cfa_lookup(bayer8_row, bayer8_col0);
+    wire [3:0] b1_cfa = bayer8x8_cfa_lookup(bayer8_row, bayer8_col1);
+    wire [3:0] b2_cfa = bayer8x8_cfa_lookup(bayer8_row, bayer8_col2);
+    wire [3:0] b3_cfa = bayer8x8_cfa_lookup(bayer8_row, bayer8_col3);
+
+    // Halved CFA offsets for text antialiasing
+    wire [3:0] b0_cfa_half = {b0_cfa[3], b0_cfa[3:1]};
+    wire [3:0] b1_cfa_half = {b1_cfa[3], b1_cfa[3:1]};
+    wire [3:0] b2_cfa_half = {b2_cfa[3], b2_cfa[3:1]};
+    wire [3:0] b3_cfa_half = {b3_cfa[3], b3_cfa[3:1]};
+
+    // =========================================================================
     // Optimized 3x3 CFA-Balanced Matrix for 2-bit path (FAST_GREY)
     // 14% better dispersion than previous, DC balanced for RGBW CFA
     // Matrix values:
@@ -440,19 +541,13 @@ module bayer_dithering #(
     adder_sat adder_sat2 (a2[8:4], b2, c2);
     adder_sat adder_sat3 (a3[8:4], b3, c3);
 
-    // 2-bit path: per-CFA brightness bias for FAST_GREY
-    // Compensates for 8x8 Bayer matrix CFA imbalance:
-    // B avg=-5.7, W avg=+1.9, G avg=+5.6, R avg=-1.9
-    // Add inverse to each CFA color to neutralize
+    // 2-bit path: uniform brightness bias for FAST_GREY
+    // Per-CFA 4x4 matrix is already balanced - no color-specific bias needed
     localparam [7:0] BIAS_2B = 8'd15;      // Base brightness boost
-    localparam [7:0] BIAS_2B_B = BIAS_2B + 8'd6;   // B needs +6 (was darkened by -5.7)
-    localparam [7:0] BIAS_2B_W = BIAS_2B - 8'd2;   // W needs -2 (was brightened by +1.9)
-    localparam [7:0] BIAS_2B_G = BIAS_2B - 8'd6;   // G needs -6 (was brightened by +5.6)
-    localparam [7:0] BIAS_2B_R = BIAS_2B - 8'd2;   // R reduced to cut red bias
 
-    // Select bias based on CFA position (cfa_row: 0=BW, 1=GR)
-    wire [7:0] bias_2b_02 = (cfa_row == 1'b0) ? BIAS_2B_B : BIAS_2B_G;  // B or G
-    wire [7:0] bias_2b_13 = (cfa_row == 1'b0) ? BIAS_2B_W : BIAS_2B_R;  // W or R
+    // Uniform bias for all CFA colors (matrix handles balance)
+    wire [7:0] bias_2b_02 = BIAS_2B;  // B or G
+    wire [7:0] bias_2b_13 = BIAS_2B;  // W or R
 
     wire [8:0] a0_2b = {1'b0, pix0} + {1'b0, bias_2b_02};
     wire [8:0] a1_2b = {1'b0, pix1} + {1'b0, bias_2b_13};
@@ -460,11 +555,11 @@ module bayer_dithering #(
     wire [8:0] a3_2b = {1'b0, pix3} + {1'b0, bias_2b_13};
 
     wire [3:0] c0_2b, c1_2b, c2_2b, c3_2b;
-    // Use 8x8 Bayer with halved offsets (-4 to +3) for finer gray transitions
-    adder_sat adder_sat0_2b (a0_2b[8:4], b0_8x8_half, c0_2b);
-    adder_sat adder_sat1_2b (a1_2b[8:4], b1_8x8_half, c1_2b);
-    adder_sat adder_sat2_2b (a2_2b[8:4], b2_8x8_half, c2_2b);
-    adder_sat adder_sat3_2b (a3_2b[8:4], b3_8x8_half, c3_2b);
+    // Use content-adaptive CFA-balanced offsets (halved for edges, full for smooth)
+    adder_sat adder_sat0_2b (a0_2b[8:4], b0_adaptive, c0_2b);
+    adder_sat adder_sat1_2b (a1_2b[8:4], b1_adaptive, c1_2b);
+    adder_sat adder_sat2_2b (a2_2b[8:4], b2_adaptive, c2_2b);
+    adder_sat adder_sat3_2b (a3_2b[8:4], b3_adaptive, c3_2b);
 
     // =========================================================================
     // Grayscale Path for Sharp B/W Text (200dpi mode)
@@ -503,11 +598,11 @@ module bayer_dithering #(
     wire [8:0] a3_gray = (cfa_row == 1'b0) ? ({1'b0, lum_for_w} + {1'b0, BIAS_2B}) : ({1'b0, luminance} + {1'b0, BIAS_2B});
 
     wire [3:0] c0_gray, c1_gray, c2_gray, c3_gray;
-    // Use 8x8 Bayer with halved offsets (same as CFA path)
-    adder_sat adder_sat0_gray (a0_gray[8:4], b0_8x8_half, c0_gray);
-    adder_sat adder_sat1_gray (a1_gray[8:4], b1_8x8_half, c1_gray);
-    adder_sat adder_sat2_gray (a2_gray[8:4], b2_8x8_half, c2_gray);
-    adder_sat adder_sat3_gray (a3_gray[8:4], b3_8x8_half, c3_gray);
+    // Use content-adaptive CFA-balanced offsets (same as CFA path)
+    adder_sat adder_sat0_gray (a0_gray[8:4], b0_adaptive, c0_gray);
+    adder_sat adder_sat1_gray (a1_gray[8:4], b1_adaptive, c1_gray);
+    adder_sat adder_sat2_gray (a2_gray[8:4], b2_adaptive, c2_gray);
+    adder_sat adder_sat3_gray (a3_gray[8:4], b3_adaptive, c3_gray);
 
     // Helper function to find max of two 8-bit values (used for local max detection)
     function [7:0] max2;
@@ -679,6 +774,17 @@ module bayer_dithering #(
     wire [7:0] max_grad_1 = max2(max2(h_diff_1, v_diff_1), max2(d_ul_diff_1, d_ur_diff_1));
     wire [7:0] max_grad_2 = max2(max2(h_diff_2, v_diff_2), d_ul_diff_2);
     wire [7:0] max_grad_3 = max2(max2(h_diff_3, v_diff_3), d_ul_diff_3);
+
+    // =========================================================================
+    // Content-Adaptive Dither Offset Selection
+    // - Edges/text (high gradient): halved CFA offsets for fine antialiasing
+    // - Smooth areas (low gradient): full CFA offsets for better gradients
+    // =========================================================================
+
+    wire [3:0] b0_adaptive = (max_grad_0 > EDGE_THRESH_LOW) ? b0_cfa_half : b0_cfa;
+    wire [3:0] b1_adaptive = (max_grad_1 > EDGE_THRESH_LOW) ? b1_cfa_half : b1_cfa;
+    wire [3:0] b2_adaptive = (max_grad_2 > EDGE_THRESH_LOW) ? b2_cfa_half : b2_cfa;
+    wire [3:0] b3_adaptive = (max_grad_3 > EDGE_THRESH_LOW) ? b3_cfa_half : b3_cfa;
 
     // =========================================================================
     // Soft Edge Detection with Gradient-Weighted Blending
