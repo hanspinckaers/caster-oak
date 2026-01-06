@@ -261,79 +261,81 @@ module bayer_dithering #(
         input [2:0] row;
         input [2:0] col;
         begin
+            // GRBW phase order: G=0, R=4, B=8, W=12
+            // G activates first (phase 0), then R, B, W last
             case ({row, col})
-                // Row 0: B=-8, W=0, B=0, W=-8, B=-6, W=2, B=2, W=-6
-                6'b000_000: bayer8x8_cfa_lookup = -4'sd8;
-                6'b000_001: bayer8x8_cfa_lookup =  4'sd0;
-                6'b000_010: bayer8x8_cfa_lookup =  4'sd0;
-                6'b000_011: bayer8x8_cfa_lookup = -4'sd8;
-                6'b000_100: bayer8x8_cfa_lookup = -4'sd6;
-                6'b000_101: bayer8x8_cfa_lookup =  4'sd2;
-                6'b000_110: bayer8x8_cfa_lookup =  4'sd2;
-                6'b000_111: bayer8x8_cfa_lookup = -4'sd6;
-                // Row 1: G=-6, R=2, G=2, R=-6, G=-8, R=0, G=0, R=-8
-                6'b001_000: bayer8x8_cfa_lookup = -4'sd6;
-                6'b001_001: bayer8x8_cfa_lookup =  4'sd2;
-                6'b001_010: bayer8x8_cfa_lookup =  4'sd2;
-                6'b001_011: bayer8x8_cfa_lookup = -4'sd6;
-                6'b001_100: bayer8x8_cfa_lookup = -4'sd8;
-                6'b001_101: bayer8x8_cfa_lookup =  4'sd0;
-                6'b001_110: bayer8x8_cfa_lookup =  4'sd0;
-                6'b001_111: bayer8x8_cfa_lookup = -4'sd8;
-                // Row 2: B=4, W=-4, B=-4, W=4, B=6, W=-2, B=-2, W=6
-                6'b010_000: bayer8x8_cfa_lookup =  4'sd4;
-                6'b010_001: bayer8x8_cfa_lookup = -4'sd4;
-                6'b010_010: bayer8x8_cfa_lookup = -4'sd4;
-                6'b010_011: bayer8x8_cfa_lookup =  4'sd4;
-                6'b010_100: bayer8x8_cfa_lookup =  4'sd6;
-                6'b010_101: bayer8x8_cfa_lookup = -4'sd2;
-                6'b010_110: bayer8x8_cfa_lookup = -4'sd2;
-                6'b010_111: bayer8x8_cfa_lookup =  4'sd6;
-                // Row 3: G=6, R=-2, G=-2, R=6, G=4, R=-4, G=-4, R=4
-                6'b011_000: bayer8x8_cfa_lookup =  4'sd6;
-                6'b011_001: bayer8x8_cfa_lookup = -4'sd2;
-                6'b011_010: bayer8x8_cfa_lookup = -4'sd2;
-                6'b011_011: bayer8x8_cfa_lookup =  4'sd6;
-                6'b011_100: bayer8x8_cfa_lookup =  4'sd4;
-                6'b011_101: bayer8x8_cfa_lookup = -4'sd4;
-                6'b011_110: bayer8x8_cfa_lookup = -4'sd4;
-                6'b011_111: bayer8x8_cfa_lookup =  4'sd4;
-                // Row 4: B=-5, W=3, B=3, W=-5, B=-7, W=1, B=1, W=-7
-                6'b100_000: bayer8x8_cfa_lookup = -4'sd5;
-                6'b100_001: bayer8x8_cfa_lookup =  4'sd3;
-                6'b100_010: bayer8x8_cfa_lookup =  4'sd3;
-                6'b100_011: bayer8x8_cfa_lookup = -4'sd5;
-                6'b100_100: bayer8x8_cfa_lookup = -4'sd7;
-                6'b100_101: bayer8x8_cfa_lookup =  4'sd1;
-                6'b100_110: bayer8x8_cfa_lookup =  4'sd1;
-                6'b100_111: bayer8x8_cfa_lookup = -4'sd7;
-                // Row 5: G=-7, R=1, G=1, R=-7, G=-5, R=3, G=3, R=-5
-                6'b101_000: bayer8x8_cfa_lookup = -4'sd7;
-                6'b101_001: bayer8x8_cfa_lookup =  4'sd1;
-                6'b101_010: bayer8x8_cfa_lookup =  4'sd1;
-                6'b101_011: bayer8x8_cfa_lookup = -4'sd7;
-                6'b101_100: bayer8x8_cfa_lookup = -4'sd5;
-                6'b101_101: bayer8x8_cfa_lookup =  4'sd3;
-                6'b101_110: bayer8x8_cfa_lookup =  4'sd3;
-                6'b101_111: bayer8x8_cfa_lookup = -4'sd5;
-                // Row 6: B=7, W=-1, B=-1, W=7, B=5, W=-3, B=-3, W=5
-                6'b110_000: bayer8x8_cfa_lookup =  4'sd7;
-                6'b110_001: bayer8x8_cfa_lookup = -4'sd1;
-                6'b110_010: bayer8x8_cfa_lookup = -4'sd1;
-                6'b110_011: bayer8x8_cfa_lookup =  4'sd7;
-                6'b110_100: bayer8x8_cfa_lookup =  4'sd5;
-                6'b110_101: bayer8x8_cfa_lookup = -4'sd3;
-                6'b110_110: bayer8x8_cfa_lookup = -4'sd3;
-                6'b110_111: bayer8x8_cfa_lookup =  4'sd5;
-                // Row 7: G=5, R=-3, G=-3, R=5, G=7, R=-1, G=-1, R=7
-                6'b111_000: bayer8x8_cfa_lookup =  4'sd5;
-                6'b111_001: bayer8x8_cfa_lookup = -4'sd3;
-                6'b111_010: bayer8x8_cfa_lookup = -4'sd3;
-                6'b111_011: bayer8x8_cfa_lookup =  4'sd5;
-                6'b111_100: bayer8x8_cfa_lookup =  4'sd7;
-                6'b111_101: bayer8x8_cfa_lookup = -4'sd1;
-                6'b111_110: bayer8x8_cfa_lookup = -4'sd1;
-                6'b111_111: bayer8x8_cfa_lookup =  4'sd7;
+                // Row 0: B=0, W=4, B=-8, W=-4, B=2, W=6, B=-6, W=-2
+                6'b000_000: bayer8x8_cfa_lookup =  4'sd0;
+                6'b000_001: bayer8x8_cfa_lookup =  4'sd4;
+                6'b000_010: bayer8x8_cfa_lookup = -4'sd8;
+                6'b000_011: bayer8x8_cfa_lookup = -4'sd4;
+                6'b000_100: bayer8x8_cfa_lookup =  4'sd2;
+                6'b000_101: bayer8x8_cfa_lookup =  4'sd6;
+                6'b000_110: bayer8x8_cfa_lookup = -4'sd6;
+                6'b000_111: bayer8x8_cfa_lookup = -4'sd2;
+                // Row 1: G=-8, R=-4, G=0, R=4, G=-6, R=-2, G=2, R=6
+                6'b001_000: bayer8x8_cfa_lookup = -4'sd8;
+                6'b001_001: bayer8x8_cfa_lookup = -4'sd4;
+                6'b001_010: bayer8x8_cfa_lookup =  4'sd0;
+                6'b001_011: bayer8x8_cfa_lookup =  4'sd4;
+                6'b001_100: bayer8x8_cfa_lookup = -4'sd6;
+                6'b001_101: bayer8x8_cfa_lookup = -4'sd2;
+                6'b001_110: bayer8x8_cfa_lookup =  4'sd2;
+                6'b001_111: bayer8x8_cfa_lookup =  4'sd6;
+                // Row 2: B=-4, W=0, B=4, W=-8, B=-2, W=2, B=6, W=-6
+                6'b010_000: bayer8x8_cfa_lookup = -4'sd4;
+                6'b010_001: bayer8x8_cfa_lookup =  4'sd0;
+                6'b010_010: bayer8x8_cfa_lookup =  4'sd4;
+                6'b010_011: bayer8x8_cfa_lookup = -4'sd8;
+                6'b010_100: bayer8x8_cfa_lookup = -4'sd2;
+                6'b010_101: bayer8x8_cfa_lookup =  4'sd2;
+                6'b010_110: bayer8x8_cfa_lookup =  4'sd6;
+                6'b010_111: bayer8x8_cfa_lookup = -4'sd6;
+                // Row 3: G=4, R=-8, G=-4, R=0, G=6, R=-6, G=-2, R=2
+                6'b011_000: bayer8x8_cfa_lookup =  4'sd4;
+                6'b011_001: bayer8x8_cfa_lookup = -4'sd8;
+                6'b011_010: bayer8x8_cfa_lookup = -4'sd4;
+                6'b011_011: bayer8x8_cfa_lookup =  4'sd0;
+                6'b011_100: bayer8x8_cfa_lookup =  4'sd6;
+                6'b011_101: bayer8x8_cfa_lookup = -4'sd6;
+                6'b011_110: bayer8x8_cfa_lookup = -4'sd2;
+                6'b011_111: bayer8x8_cfa_lookup =  4'sd2;
+                // Row 4: B=3, W=7, B=-5, W=-1, B=1, W=5, B=-7, W=-3
+                6'b100_000: bayer8x8_cfa_lookup =  4'sd3;
+                6'b100_001: bayer8x8_cfa_lookup =  4'sd7;
+                6'b100_010: bayer8x8_cfa_lookup = -4'sd5;
+                6'b100_011: bayer8x8_cfa_lookup = -4'sd1;
+                6'b100_100: bayer8x8_cfa_lookup =  4'sd1;
+                6'b100_101: bayer8x8_cfa_lookup =  4'sd5;
+                6'b100_110: bayer8x8_cfa_lookup = -4'sd7;
+                6'b100_111: bayer8x8_cfa_lookup = -4'sd3;
+                // Row 5: G=-5, R=-1, G=3, R=7, G=-7, R=-3, G=1, R=5
+                6'b101_000: bayer8x8_cfa_lookup = -4'sd5;
+                6'b101_001: bayer8x8_cfa_lookup = -4'sd1;
+                6'b101_010: bayer8x8_cfa_lookup =  4'sd3;
+                6'b101_011: bayer8x8_cfa_lookup =  4'sd7;
+                6'b101_100: bayer8x8_cfa_lookup = -4'sd7;
+                6'b101_101: bayer8x8_cfa_lookup = -4'sd3;
+                6'b101_110: bayer8x8_cfa_lookup =  4'sd1;
+                6'b101_111: bayer8x8_cfa_lookup =  4'sd5;
+                // Row 6: B=-1, W=3, B=7, W=-5, B=-3, W=1, B=5, W=-7
+                6'b110_000: bayer8x8_cfa_lookup = -4'sd1;
+                6'b110_001: bayer8x8_cfa_lookup =  4'sd3;
+                6'b110_010: bayer8x8_cfa_lookup =  4'sd7;
+                6'b110_011: bayer8x8_cfa_lookup = -4'sd5;
+                6'b110_100: bayer8x8_cfa_lookup = -4'sd3;
+                6'b110_101: bayer8x8_cfa_lookup =  4'sd1;
+                6'b110_110: bayer8x8_cfa_lookup =  4'sd5;
+                6'b110_111: bayer8x8_cfa_lookup = -4'sd7;
+                // Row 7: G=7, R=-5, G=-1, R=3, G=5, R=-7, G=-3, R=1
+                6'b111_000: bayer8x8_cfa_lookup =  4'sd7;
+                6'b111_001: bayer8x8_cfa_lookup = -4'sd5;
+                6'b111_010: bayer8x8_cfa_lookup = -4'sd1;
+                6'b111_011: bayer8x8_cfa_lookup =  4'sd3;
+                6'b111_100: bayer8x8_cfa_lookup =  4'sd5;
+                6'b111_101: bayer8x8_cfa_lookup = -4'sd7;
+                6'b111_110: bayer8x8_cfa_lookup = -4'sd3;
+                6'b111_111: bayer8x8_cfa_lookup =  4'sd1;
                 default: bayer8x8_cfa_lookup = 4'sd0;
             endcase
         end
@@ -541,13 +543,20 @@ module bayer_dithering #(
     adder_sat adder_sat2 (a2[8:4], b2, c2);
     adder_sat adder_sat3 (a3[8:4], b3, c3);
 
-    // 2-bit path: uniform brightness bias for FAST_GREY
-    // Per-CFA 4x4 matrix is already balanced - no color-specific bias needed
+    // 2-bit path: per-CFA brightness bias for FAST_GREY
+    // Tuned for neutral gray rendering with GRBW phase order
+    // 3x warm-green bias: G+24, R+12, B-12, W=baseline
     localparam [7:0] BIAS_2B = 8'd15;      // Base brightness boost
+    localparam [7:0] BIAS_2B_B = 8'd3;     // Blue: 15 - 12 = 3
+    localparam [7:0] BIAS_2B_W = 8'd15;    // White: baseline
+    localparam [7:0] BIAS_2B_G = 8'd39;    // Green: 15 + 24 = 39
+    localparam [7:0] BIAS_2B_R = 8'd27;    // Red: 15 + 12 = 27
 
-    // Uniform bias for all CFA colors (matrix handles balance)
-    wire [7:0] bias_2b_02 = BIAS_2B;  // B or G
-    wire [7:0] bias_2b_13 = BIAS_2B;  // W or R
+    // Per-CFA bias selection
+    // Row 0 (cfa_row=0): pix0,pix2=B, pix1,pix3=W
+    // Row 1 (cfa_row=1): pix0,pix2=G, pix1,pix3=R
+    wire [7:0] bias_2b_02 = (cfa_row == 1'b0) ? BIAS_2B_B : BIAS_2B_G;
+    wire [7:0] bias_2b_13 = (cfa_row == 1'b0) ? BIAS_2B_W : BIAS_2B_R;
 
     wire [8:0] a0_2b = {1'b0, pix0} + {1'b0, bias_2b_02};
     wire [8:0] a1_2b = {1'b0, pix1} + {1'b0, bias_2b_13};
