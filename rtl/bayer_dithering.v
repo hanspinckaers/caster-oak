@@ -543,7 +543,7 @@ module bayer_dithering #(
 
     // 2-bit path: uniform brightness bias for FAST_GREY
     // Per-CFA 4x4 matrix is already balanced - no color-specific bias needed
-    localparam [7:0] BIAS_2B = 8'd20;      // Base brightness boost (balanced)
+    localparam [7:0] BIAS_2B = 8'd15;      // Base brightness boost
 
     // Uniform bias for all CFA colors (matrix handles balance)
     wire [7:0] bias_2b_02 = BIAS_2B;  // B or G

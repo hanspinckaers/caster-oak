@@ -605,7 +605,7 @@ module caster(
     wire [15:0] s2_vin_selected_y4 = {s2_vin_selected[31:28],
         s2_vin_selected[23:20], s2_vin_selected[15:12], s2_vin_selected[7:4]};
 
-    // Degamma
+    // Degamma (gamma 1.5 for most modes)
     wire [31:0] s2_pixel_linear;
     generate
         for (i = 0; i < 4; i = i + 1) begin: gen_degamma
@@ -615,7 +615,28 @@ module caster(
             );
         end
     endgenerate
-    //assign s2_pixel_linear = s2_vin_overlayed;
+
+    // Degamma 2.2 for FAST_MONO Bayer
+    wire [31:0] s2_pixel_linear_22;
+    generate
+        for (i = 0; i < 4; i = i + 1) begin: gen_degamma_22
+            degamma_22 degamma_22 (
+                .in(s2_vin_selected[i*8+2 +: 6]),
+                .out(s2_pixel_linear_22[i*8 +: 8])
+            );
+        end
+    endgenerate
+
+    // Degamma for FAST_GREY (2.2 with compressed highlights)
+    wire [31:0] s2_pixel_linear_fg;
+    generate
+        for (i = 0; i < 4; i = i + 1) begin: gen_degamma_fg
+            degamma_fg degamma_fg (
+                .in(s2_vin_selected[i*8+2 +: 6]),
+                .out(s2_pixel_linear_fg[i*8 +: 8])
+            );
+        end
+    endgenerate
 
     // Output dithered pixel 1 clock later
     blue_noise_dithering #(
@@ -648,7 +669,8 @@ module caster(
     ) bayer_dithering (
         .clk(clk),
         .rst(rst),
-        .vin(s2_pixel_linear),
+        .vin(s2_pixel_linear_22),      // 2.2 degamma (same as FAST_MONO) for testing
+        .vin_1b(s2_pixel_linear_22),   // 2.2 gamma for 1-bit FAST_MONO
         .vout_1b(s3_pixel_bayer_1b),   // 1-bit for FAST_MONO (3x3 Bayer)
         .vout_2b(s3_pixel_bayer_2b),   // 2-bit for FAST_GREY (4x4 CFA-balanced)
         .x_cnt(scan_h_cnt),
