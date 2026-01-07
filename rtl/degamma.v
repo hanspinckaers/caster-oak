@@ -20,26 +20,26 @@ module degamma(
     output reg [7:0] out
 );
 
-    // Boosted darker mids, 251 (input 62) still gray, only 63 is white
+    // +33% gamma: darker shadows, preserved mids/highlights
     always @(in) begin
         case (in)
-        // Shadows: keep dark for contrast
+        // Shadows: darker for more contrast
         6'd0: out = 8'd0;
         6'd1: out = 8'd0;
-        6'd2: out = 8'd1;
-        6'd3: out = 8'd3;
-        6'd4: out = 8'd5;
-        6'd5: out = 8'd8;
-        6'd6: out = 8'd11;
-        6'd7: out = 8'd14;
-        6'd8: out = 8'd18;
-        6'd9: out = 8'd22;
-        6'd10: out = 8'd26;
-        6'd11: out = 8'd30;
-        6'd12: out = 8'd35;
-        6'd13: out = 8'd40;
-        6'd14: out = 8'd45;
-        6'd15: out = 8'd50;
+        6'd2: out = 8'd0;
+        6'd3: out = 8'd2;
+        6'd4: out = 8'd3;
+        6'd5: out = 8'd5;
+        6'd6: out = 8'd7;
+        6'd7: out = 8'd10;
+        6'd8: out = 8'd13;
+        6'd9: out = 8'd16;
+        6'd10: out = 8'd20;
+        6'd11: out = 8'd24;
+        6'd12: out = 8'd28;
+        6'd13: out = 8'd33;
+        6'd14: out = 8'd38;
+        6'd15: out = 8'd44;
         // Lower mids: boosted (brighter)
         6'd16: out = 8'd56;
         6'd17: out = 8'd62;
@@ -74,21 +74,21 @@ module degamma(
         6'd45: out = 8'd205;
         6'd46: out = 8'd208;
         6'd47: out = 8'd211;
-        // Highlights: compressed, stay gray
-        6'd48: out = 8'd214;
-        6'd49: out = 8'd217;
-        6'd50: out = 8'd220;
-        6'd51: out = 8'd223;
-        6'd52: out = 8'd226;
-        6'd53: out = 8'd228;
-        6'd54: out = 8'd230;
-        6'd55: out = 8'd232;
-        6'd56: out = 8'd234;
-        6'd57: out = 8'd236;
-        6'd58: out = 8'd238;
-        6'd59: out = 8'd240;
-        6'd60: out = 8'd242;
-        6'd61: out = 8'd244;
+        // Highlights: expanded steps (start lower), 62 stays gray at 246
+        6'd48: out = 8'd185;
+        6'd49: out = 8'd189;
+        6'd50: out = 8'd193;
+        6'd51: out = 8'd197;
+        6'd52: out = 8'd201;
+        6'd53: out = 8'd205;
+        6'd54: out = 8'd209;
+        6'd55: out = 8'd214;
+        6'd56: out = 8'd219;
+        6'd57: out = 8'd224;
+        6'd58: out = 8'd229;
+        6'd59: out = 8'd234;
+        6'd60: out = 8'd239;
+        6'd61: out = 8'd243;
         6'd62: out = 8'd246;  // 8-bit 251 = still gray
         6'd63: out = 8'd255;  // only true white
         endcase
