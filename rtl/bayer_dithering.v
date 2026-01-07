@@ -615,7 +615,9 @@ module bayer_dithering #(
     wire is_not_bright = (luminance < 8'd220);  // Include most colors except near-white
     wire is_sat_colored = is_saturated && is_not_bright;
     // When saturated on W row, use scaled luminance so W blends darker
-    wire [7:0] lum_for_sat = luminance >> 1;  // 50% luminance = dark gray
+    // Clamp to minimum 64, but only if original wasn't already dark
+    wire [7:0] lum_half = luminance >> 1;
+    wire [7:0] lum_for_sat = (lum_half < 8'd64 && luminance > 8'd80) ? 8'd64 : lum_half;
     wire [7:0] pix1_sat = (is_sat_colored && cfa_row == 1'b0) ? lum_for_sat : pix1;
     wire [7:0] pix3_sat = (is_sat_colored && cfa_row == 1'b0) ? lum_for_sat : pix3;
 
