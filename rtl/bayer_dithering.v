@@ -578,7 +578,7 @@ module bayer_dithering #(
     // Only activated for black text on white backgrounds
     // =========================================================================
 
-    // Saturation detection: max - min across all 4 pixels
+    // Saturation detection: max - min across all 4 pixels (current row only)
     wire [7:0] max_01 = (pix0 > pix1) ? pix0 : pix1;
     wire [7:0] max_23 = (pix2 > pix3) ? pix2 : pix3;
     wire [7:0] max_all = (max_01 > max_23) ? max_01 : max_23;
@@ -588,9 +588,20 @@ module bayer_dithering #(
     wire [7:0] saturation = max_all - min_all;
     wire is_low_saturation = (saturation < 8'd30);
 
-    // Saturated mid-dark detection for W lightening
-    // Saturated colors with dark luminance get harsh dithering - boost W toward light gray
-    wire is_saturated = (saturation > 8'd50);
+    // True saturation: use both current row AND previous row (all 4 CFA colors)
+    // Row 0 (BW): pix0=B, pix1=W, prev1_pix0=G, prev1_pix1=R
+    // Row 1 (GR): pix0=G, pix1=R, prev1_pix0=B, prev1_pix1=W
+    // prev1_line_pix0/1 defined later but Verilog handles forward refs
+    wire [7:0] max_cur = (pix0 > pix1) ? pix0 : pix1;
+    wire [7:0] max_prev = (prev1_line_pix0 > prev1_line_pix1) ? prev1_line_pix0 : prev1_line_pix1;
+    wire [7:0] max_true = (max_cur > max_prev) ? max_cur : max_prev;
+    wire [7:0] min_cur = (pix0 < pix1) ? pix0 : pix1;
+    wire [7:0] min_prev = (prev1_line_pix0 < prev1_line_pix1) ? prev1_line_pix0 : prev1_line_pix1;
+    wire [7:0] min_true = (min_cur < min_prev) ? min_cur : min_prev;
+    wire [7:0] true_saturation = max_true - min_true;
+
+    // Use true saturation for W adjustment (sees all RGBW channels)
+    wire is_saturated = (true_saturation > 8'd50);  // Back to reasonable threshold
 
     // Luminance approximation: average of all pixels
     // (pix0 + pix1 + pix2 + pix3) / 4
@@ -600,11 +611,12 @@ module bayer_dithering #(
     // Saturated mid-dark W adjustment for CFA path
     // Bright W pixels in saturated color areas are distracting
     // Use luminance instead of raw W so it matches the color's perceived brightness
-    wire is_mid_dark = (luminance < 8'd150);
-    wire is_sat_mid_dark = is_saturated && is_mid_dark;
-    // When saturated+mid-dark on W row, use luminance so W blends with color
-    wire [7:0] pix1_sat = (is_sat_mid_dark && cfa_row == 1'b0) ? luminance : pix1;
-    wire [7:0] pix3_sat = (is_sat_mid_dark && cfa_row == 1'b0) ? luminance : pix3;
+    wire is_not_bright = (luminance < 8'd220);  // Include most colors except near-white
+    wire is_sat_colored = is_saturated && is_not_bright;
+    // When saturated on W row, use scaled luminance so W blends darker
+    wire [7:0] lum_for_sat = luminance - (luminance >> 2);  // 75% luminance
+    wire [7:0] pix1_sat = (is_sat_colored && cfa_row == 1'b0) ? lum_for_sat : pix1;
+    wire [7:0] pix3_sat = (is_sat_colored && cfa_row == 1'b0) ? lum_for_sat : pix3;
 
     // W_LIGHTEN: Boost dark W pixels to reduce stroke weight on W columns
     // Only applies to W subpixels (row 0, odd columns = pix1, pix3)
@@ -736,11 +748,16 @@ module bayer_dithering #(
     
     // Read from line buffer (n-2 has same color as current line)
     wire [31:0] prev2_line_pixels = line_buffer_1[line_buf_addr];     // n-2 (same color)
-    
+    wire [31:0] prev1_line_pixels = line_buffer_0[line_buf_addr];     // n-1 (opposite CFA row)
+
     wire [7:0] prev2_line_pix0 = prev2_line_pixels[31:24];
     wire [7:0] prev2_line_pix1 = prev2_line_pixels[23:16];
     wire [7:0] prev2_line_pix2 = prev2_line_pixels[15:8];
     wire [7:0] prev2_line_pix3 = prev2_line_pixels[7:0];
+
+    // Previous line pixels (opposite CFA row: if current is BW, prev1 is GR)
+    wire [7:0] prev1_line_pix0 = prev1_line_pixels[31:24];
+    wire [7:0] prev1_line_pix1 = prev1_line_pixels[23:16];
     
     // Cascade write: current -> buffer_0 -> buffer_1
     always @(posedge clk) begin
