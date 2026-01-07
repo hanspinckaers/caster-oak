@@ -288,6 +288,9 @@ module caster(
     reg doping_pulse;
     localparam DOPING_INTERVAL = 8'd125;
 
+    // Frame skip for halving input rate (haze testing)
+    reg frame_skip_input;
+
     always @(posedge clk) begin
         case (scan_state)
         SCAN_IDLE: begin
@@ -330,6 +333,8 @@ module caster(
                     doping_counter <= doping_counter - 8'd1;
                     doping_pulse <= 1'b0;
                 end
+                // Toggle frame skip for halving input rate
+                frame_skip_input <= ~frame_skip_input;
             end
             else begin
                 scan_h_cnt <= scan_h_cnt + 1;
@@ -369,6 +374,7 @@ module caster(
             al_framecnt <= 0;
             doping_counter <= DOPING_INTERVAL;
             doping_pulse <= 1'b0;
+            frame_skip_input <= 1'b0;
         end
     end
 
@@ -627,12 +633,12 @@ module caster(
         end
     endgenerate
 
-    // Degamma for FAST_GREY (2.2 with compressed highlights)
+    // Degamma for FAST_GREY (8-bit input for higher precision)
     wire [31:0] s2_pixel_linear_fg;
     generate
         for (i = 0; i < 4; i = i + 1) begin: gen_degamma_fg
-            degamma_fg degamma_fg (
-                .in(s2_vin_selected[i*8+2 +: 6]),
+            degamma_fg_8b degamma_fg_8b (
+                .in(s2_vin_selected[i*8 +: 8]),
                 .out(s2_pixel_linear_fg[i*8 +: 8])
             );
         end
@@ -915,7 +921,8 @@ module caster(
                 .op_framecnt(op_framecnt),
                 .al_framecnt(al_framecnt),
                 .neighbor_video(neighbor_video[i]),
-                .doping_pulse(doping_pulse)
+                .doping_pulse(doping_pulse),
+                .frame_skip_input(frame_skip_input)
             );
 
             // Output
