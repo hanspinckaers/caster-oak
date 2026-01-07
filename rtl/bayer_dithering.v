@@ -601,7 +601,8 @@ module bayer_dithering #(
     wire [7:0] true_saturation = max_true - min_true;
 
     // Use true saturation for W adjustment (sees all RGBW channels)
-    wire is_saturated = (true_saturation > 8'd50);  // Back to reasonable threshold
+    // DISABLED for now - causes issues
+    wire is_saturated = 1'b0;  // (true_saturation > 8'd50)
 
     // Luminance approximation: average of all pixels
     // (pix0 + pix1 + pix2 + pix3) / 4
