@@ -40,56 +40,56 @@ module degamma(
         6'd13: out = 8'd33;
         6'd14: out = 8'd38;
         6'd15: out = 8'd44;
-        // Lower mids: -10% darker
-        6'd16: out = 8'd45;
-        6'd17: out = 8'd50;
-        6'd18: out = 8'd56;
-        6'd19: out = 8'd61;
-        6'd20: out = 8'd67;
-        6'd21: out = 8'd72;
-        6'd22: out = 8'd78;
-        6'd23: out = 8'd83;
-        6'd24: out = 8'd89;
-        6'd25: out = 8'd94;
-        6'd26: out = 8'd100;
-        6'd27: out = 8'd105;
-        6'd28: out = 8'd111;
-        6'd29: out = 8'd116;
-        6'd30: out = 8'd122;
-        6'd31: out = 8'd127;
-        // Upper mids: -10% darker
-        6'd32: out = 8'd132;
-        6'd33: out = 8'd137;
-        6'd34: out = 8'd142;
-        6'd35: out = 8'd147;
-        6'd36: out = 8'd152;
-        6'd37: out = 8'd156;
-        6'd38: out = 8'd160;
-        6'd39: out = 8'd164;
-        6'd40: out = 8'd168;
-        6'd41: out = 8'd172;
-        6'd42: out = 8'd176;
-        6'd43: out = 8'd180;
-        6'd44: out = 8'd184;
-        6'd45: out = 8'd188;
-        6'd46: out = 8'd192;
-        6'd47: out = 8'd196;
-        // Highlights: adjusted to match, spread to 246
-        6'd48: out = 8'd200;
-        6'd49: out = 8'd203;
-        6'd50: out = 8'd206;
-        6'd51: out = 8'd209;
-        6'd52: out = 8'd212;
-        6'd53: out = 8'd215;
-        6'd54: out = 8'd218;
-        6'd55: out = 8'd221;
-        6'd56: out = 8'd224;
-        6'd57: out = 8'd228;
-        6'd58: out = 8'd232;
-        6'd59: out = 8'd236;
-        6'd60: out = 8'd239;
-        6'd61: out = 8'd242;
-        6'd62: out = 8'd246;  // 8-bit 251 = still gray
+        // Lower mids: -1% darker
+        6'd16: out = 8'd44;
+        6'd17: out = 8'd49;
+        6'd18: out = 8'd55;
+        6'd19: out = 8'd60;
+        6'd20: out = 8'd66;
+        6'd21: out = 8'd71;
+        6'd22: out = 8'd77;
+        6'd23: out = 8'd82;
+        6'd24: out = 8'd88;
+        6'd25: out = 8'd93;
+        6'd26: out = 8'd99;
+        6'd27: out = 8'd104;
+        6'd28: out = 8'd110;
+        6'd29: out = 8'd115;
+        6'd30: out = 8'd121;
+        6'd31: out = 8'd126;
+        // Upper mids: -1% darker
+        6'd32: out = 8'd131;
+        6'd33: out = 8'd136;
+        6'd34: out = 8'd141;
+        6'd35: out = 8'd146;
+        6'd36: out = 8'd150;
+        6'd37: out = 8'd154;
+        6'd38: out = 8'd158;
+        6'd39: out = 8'd162;
+        6'd40: out = 8'd166;
+        6'd41: out = 8'd170;
+        6'd42: out = 8'd174;
+        6'd43: out = 8'd178;
+        6'd44: out = 8'd182;
+        6'd45: out = 8'd186;
+        6'd46: out = 8'd190;
+        6'd47: out = 8'd194;
+        // Highlights: -1% darker, spread to 244
+        6'd48: out = 8'd198;
+        6'd49: out = 8'd201;
+        6'd50: out = 8'd204;
+        6'd51: out = 8'd207;
+        6'd52: out = 8'd210;
+        6'd53: out = 8'd213;
+        6'd54: out = 8'd216;
+        6'd55: out = 8'd219;
+        6'd56: out = 8'd222;
+        6'd57: out = 8'd226;
+        6'd58: out = 8'd230;
+        6'd59: out = 8'd234;
+        6'd60: out = 8'd237;
+        6'd61: out = 8'd240;
+        6'd62: out = 8'd244;  // still gray
         6'd63: out = 8'd255;  // only true white
         endcase
     end
