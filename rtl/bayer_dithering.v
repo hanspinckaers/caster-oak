@@ -552,11 +552,29 @@ module bayer_dithering #(
     localparam [7:0] BIAS_2B_G = 8'd24;    // Green: 9 + 15 = 24
     localparam [7:0] BIAS_2B_R = 8'd16;    // Red: 9 + 7 = 16
 
+    // Per-CFA quantization thresholds (in 4-bit space: 0-15)
+    // Default thresholds: 4 (0→1), 8 (1→2), 12 (2→3)
+    // Lower threshold = easier to reach that level = brighter
+    localparam [3:0] THRESH_B_1 = 4'd3;    // Blue 0→1 (brighter)
+    localparam [3:0] THRESH_B_2 = 4'd7;    // Blue 1→2 (brighter)
+    localparam [3:0] THRESH_W_1 = 4'd5;    // White 0→1 (slightly darker)
+    localparam [3:0] THRESH_W_2 = 4'd8;    // White 1→2
+    localparam [3:0] THRESH_G_1 = 4'd4;    // Green 0→1
+    localparam [3:0] THRESH_G_2 = 4'd8;    // Green 1→2
+    localparam [3:0] THRESH_R_1 = 4'd3;    // Red 0→1 (brighter)
+    localparam [3:0] THRESH_R_2 = 4'd7;    // Red 1→2 (brighter)
+
     // Per-CFA bias selection
     // Row 0 (cfa_row=0): pix0,pix2=B, pix1,pix3=W
     // Row 1 (cfa_row=1): pix0,pix2=G, pix1,pix3=R
     wire [7:0] bias_2b_02 = (cfa_row == 1'b0) ? BIAS_2B_B : BIAS_2B_G;
     wire [7:0] bias_2b_13 = (cfa_row == 1'b0) ? BIAS_2B_W : BIAS_2B_R;
+
+    // Per-CFA threshold selection
+    wire [3:0] thresh_02_1 = (cfa_row == 1'b0) ? THRESH_B_1 : THRESH_G_1;
+    wire [3:0] thresh_02_2 = (cfa_row == 1'b0) ? THRESH_B_2 : THRESH_G_2;
+    wire [3:0] thresh_13_1 = (cfa_row == 1'b0) ? THRESH_W_1 : THRESH_R_1;
+    wire [3:0] thresh_13_2 = (cfa_row == 1'b0) ? THRESH_W_2 : THRESH_R_2;
 
     // Direct bias - max 24, no clamping needed
     // pix1_sat/pix3_sat: for W (row 0), use light gray when saturated mid-dark
@@ -601,8 +619,8 @@ module bayer_dithering #(
     wire [7:0] true_saturation = max_true - min_true;
 
     // Use true saturation for W adjustment (sees all RGBW channels)
-    // High threshold - only truly saturated colors like cyan (sat=66)
-    wire is_saturated = (true_saturation > 8'd60);
+    // DISABLED - causes ugly artifacts
+    wire is_saturated = 1'b0;
 
     // Luminance approximation: average of all pixels
     // (pix0 + pix1 + pix2 + pix3) / 4
@@ -906,14 +924,29 @@ module bayer_dithering #(
     // Two paths (matches bayer_dither_4level_edge_aware_no_simple):
     // 1. Grayscale (200dpi): for black text on white (edge + low sat + bright bg + dark pixel)
     // 2. CFA Bayer dither: for everything else
+
+    // Per-CFA threshold quantization (level 3 threshold fixed at 12)
+    wire [1:0] quant_02 = (c0_2b >= 4'd12) ? 2'd3 :
+                          (c0_2b >= thresh_02_2) ? 2'd2 :
+                          (c0_2b >= thresh_02_1) ? 2'd1 : 2'd0;
+    wire [1:0] quant_13 = (c1_2b >= 4'd12) ? 2'd3 :
+                          (c1_2b >= thresh_13_2) ? 2'd2 :
+                          (c1_2b >= thresh_13_1) ? 2'd1 : 2'd0;
+    wire [1:0] quant_22 = (c2_2b >= 4'd12) ? 2'd3 :
+                          (c2_2b >= thresh_02_2) ? 2'd2 :
+                          (c2_2b >= thresh_02_1) ? 2'd1 : 2'd0;
+    wire [1:0] quant_33 = (c3_2b >= 4'd12) ? 2'd3 :
+                          (c3_2b >= thresh_13_2) ? 2'd2 :
+                          (c3_2b >= thresh_13_1) ? 2'd1 : 2'd0;
+
     wire [1:0] out0_2b = (pix0 >= 8'd250) ? 2'b11 : (pix0 <= 8'd5) ? 2'b00 :
-                         use_gray_0 ? c0_gray[3:2] : c0_2b[3:2];
+                         use_gray_0 ? c0_gray[3:2] : quant_02;
     wire [1:0] out1_2b = (pix1 >= 8'd250) ? 2'b11 : (pix1 <= 8'd5) ? 2'b00 :
-                         use_gray_1 ? c1_gray[3:2] : c1_2b[3:2];
+                         use_gray_1 ? c1_gray[3:2] : quant_13;
     wire [1:0] out2_2b = (pix2 >= 8'd250) ? 2'b11 : (pix2 <= 8'd5) ? 2'b00 :
-                         use_gray_2 ? c2_gray[3:2] : c2_2b[3:2];
+                         use_gray_2 ? c2_gray[3:2] : quant_22;
     wire [1:0] out3_2b = (pix3 >= 8'd250) ? 2'b11 : (pix3 <= 8'd5) ? 2'b00 :
-                         use_gray_3 ? c3_gray[3:2] : c3_2b[3:2];
+                         use_gray_3 ? c3_gray[3:2] : quant_33;
     wire [7:0] final_out_2b = {out0_2b, out1_2b, out2_2b, out3_2b};
 
     always @(posedge clk) begin
