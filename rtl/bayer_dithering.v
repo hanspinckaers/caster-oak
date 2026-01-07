@@ -792,23 +792,25 @@ module bayer_dithering #(
     // =========================================================================
 
     // Content-adaptive dithering: halved bayer for smooth areas, NO dither for edges
-    // Only disable dither for DARK pixels at edges - light pixels keep dithering
-    // This prevents white borders around dark text on light backgrounds
-    wire is_dark_0 = (pix0 < 8'd128);
-    wire is_dark_1 = (pix1 < 8'd128);
-    wire is_dark_2 = (pix2 < 8'd128);
-    wire is_dark_3 = (pix3 < 8'd128);
+    // At edges with dark pixels (luminance-based), quantize all channels together
+    // Light pixels at edges keep dithering
+    wire is_dark_lum = (luminance < 8'd128);
 
-    wire is_edge_0 = (max_grad_0 > EDGE_THRESH_LOW);
-    wire is_edge_1 = (max_grad_1 > EDGE_THRESH_LOW);
-    wire is_edge_2 = (max_grad_2 > EDGE_THRESH_LOW);
-    wire is_edge_3 = (max_grad_3 > EDGE_THRESH_LOW);
+    wire is_dither_edge_0 = (max_grad_0 > EDGE_THRESH_LOW);
+    wire is_dither_edge_1 = (max_grad_1 > EDGE_THRESH_LOW);
+    wire is_dither_edge_2 = (max_grad_2 > EDGE_THRESH_LOW);
+    wire is_dither_edge_3 = (max_grad_3 > EDGE_THRESH_LOW);
 
-    // Only dark pixels at edges get no dither, light pixels always get dithering
-    wire [3:0] b0_adaptive = (is_edge_0 && is_dark_0) ? 4'sd0 : b0_cfa_half;
-    wire [3:0] b1_adaptive = (is_edge_1 && is_dark_1) ? 4'sd0 : b1_cfa_half;
-    wire [3:0] b2_adaptive = (is_edge_2 && is_dark_2) ? 4'sd0 : b2_cfa_half;
-    wire [3:0] b3_adaptive = (is_edge_3 && is_dark_3) ? 4'sd0 : b3_cfa_half;
+    // Dark pixels (by luminance) at edges: all channels get no dither together
+    wire no_dither_0 = is_dither_edge_0 && is_dark_lum;
+    wire no_dither_1 = is_dither_edge_1 && is_dark_lum;
+    wire no_dither_2 = is_dither_edge_2 && is_dark_lum;
+    wire no_dither_3 = is_dither_edge_3 && is_dark_lum;
+
+    wire [3:0] b0_adaptive = no_dither_0 ? 4'sd0 : b0_cfa_half;
+    wire [3:0] b1_adaptive = no_dither_1 ? 4'sd0 : b1_cfa_half;
+    wire [3:0] b2_adaptive = no_dither_2 ? 4'sd0 : b2_cfa_half;
+    wire [3:0] b3_adaptive = no_dither_3 ? 4'sd0 : b3_cfa_half;
 
     // =========================================================================
     // Soft Edge Detection with Gradient-Weighted Blending
