@@ -545,12 +545,12 @@ module bayer_dithering #(
 
     // 2-bit path: per-CFA brightness bias for FAST_GREY
     // Tuned for neutral gray rendering with GRBW phase order
-    // 3x warm-green bias: G+24, R+12, B-12, W=baseline
+    // Red-heavy bias: R dominates for warmer look
     localparam [7:0] BIAS_2B = 8'd15;      // Base brightness boost
-    localparam [7:0] BIAS_2B_B = 8'd3;     // Blue: 15 - 12 = 3
+    localparam [7:0] BIAS_2B_B = 8'd5;     // Blue: minimal
     localparam [7:0] BIAS_2B_W = 8'd15;    // White: baseline
-    localparam [7:0] BIAS_2B_G = 8'd39;    // Green: 15 + 24 = 39
-    localparam [7:0] BIAS_2B_R = 8'd27;    // Red: 15 + 12 = 27
+    localparam [7:0] BIAS_2B_G = 8'd20;    // Green: 15 + 5 = 20
+    localparam [7:0] BIAS_2B_R = 8'd40;    // Red: 15 + 25 = 40 (dominant)
 
     // Per-CFA bias selection
     // Row 0 (cfa_row=0): pix0,pix2=B, pix1,pix3=W
