@@ -545,12 +545,12 @@ module bayer_dithering #(
 
     // 2-bit path: per-CFA brightness bias for FAST_GREY
     // Tuned for neutral gray rendering with GRBW phase order
-    // Balanced warm: G+10, R slight, B reduced
-    localparam [7:0] BIAS_2B = 8'd15;      // Base brightness boost
-    localparam [7:0] BIAS_2B_B = 8'd5;     // Blue: reduced (was 15-10=5)
-    localparam [7:0] BIAS_2B_W = 8'd8;     // White: slightly below baseline
-    localparam [7:0] BIAS_2B_G = 8'd25;    // Green: 15 + 10 = 25
-    localparam [7:0] BIAS_2B_R = 8'd15;    // Red: baseline
+    // Reduced warm-green bias (~60% of original) - no clamping needed
+    localparam [7:0] BIAS_2B = 8'd9;       // Base brightness boost (was 15)
+    localparam [7:0] BIAS_2B_B = 8'd2;     // Blue: minimal
+    localparam [7:0] BIAS_2B_W = 8'd9;     // White: baseline
+    localparam [7:0] BIAS_2B_G = 8'd24;    // Green: 9 + 15 = 24
+    localparam [7:0] BIAS_2B_R = 8'd16;    // Red: 9 + 7 = 16
 
     // Per-CFA bias selection
     // Row 0 (cfa_row=0): pix0,pix2=B, pix1,pix3=W
@@ -558,7 +558,7 @@ module bayer_dithering #(
     wire [7:0] bias_2b_02 = (cfa_row == 1'b0) ? BIAS_2B_B : BIAS_2B_G;
     wire [7:0] bias_2b_13 = (cfa_row == 1'b0) ? BIAS_2B_W : BIAS_2B_R;
 
-    // Direct bias addition - low bias values (max 25) don't need clamping
+    // Direct bias - max 24, no clamping needed
     wire [8:0] a0_2b = {1'b0, pix0} + {1'b0, bias_2b_02};
     wire [8:0] a1_2b = {1'b0, pix1} + {1'b0, bias_2b_13};
     wire [8:0] a2_2b = {1'b0, pix2} + {1'b0, bias_2b_02};
