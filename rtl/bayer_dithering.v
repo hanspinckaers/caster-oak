@@ -601,8 +601,8 @@ module bayer_dithering #(
     wire [7:0] true_saturation = max_true - min_true;
 
     // Use true saturation for W adjustment (sees all RGBW channels)
-    // DISABLED for now - causes issues
-    wire is_saturated = 1'b0;  // (true_saturation > 8'd50)
+    // High threshold - only truly saturated colors like cyan (sat=66)
+    wire is_saturated = (true_saturation > 8'd60);
 
     // Luminance approximation: average of all pixels
     // (pix0 + pix1 + pix2 + pix3) / 4
@@ -615,7 +615,7 @@ module bayer_dithering #(
     wire is_not_bright = (luminance < 8'd220);  // Include most colors except near-white
     wire is_sat_colored = is_saturated && is_not_bright;
     // When saturated on W row, use scaled luminance so W blends darker
-    wire [7:0] lum_for_sat = luminance - (luminance >> 2);  // 75% luminance
+    wire [7:0] lum_for_sat = luminance >> 1;  // 50% luminance = dark gray
     wire [7:0] pix1_sat = (is_sat_colored && cfa_row == 1'b0) ? lum_for_sat : pix1;
     wire [7:0] pix3_sat = (is_sat_colored && cfa_row == 1'b0) ? lum_for_sat : pix3;
 
