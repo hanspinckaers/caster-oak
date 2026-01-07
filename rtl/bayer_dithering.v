@@ -823,20 +823,17 @@ module bayer_dithering #(
     // =========================================================================
 
     // Content-adaptive dithering: halved bayer for smooth areas, NO dither for edges
-    // At edges with dark pixels (luminance-based), quantize all channels together
-    // Light pixels at edges keep dithering
-    wire is_dark_lum = (luminance < 8'd128);
-
+    // At edges, quantize all channels together (no dithering)
     wire is_dither_edge_0 = (max_grad_0 > EDGE_THRESH_LOW);
     wire is_dither_edge_1 = (max_grad_1 > EDGE_THRESH_LOW);
     wire is_dither_edge_2 = (max_grad_2 > EDGE_THRESH_LOW);
     wire is_dither_edge_3 = (max_grad_3 > EDGE_THRESH_LOW);
 
-    // Dark pixels (by luminance) at edges: all channels get no dither together
-    wire no_dither_0 = is_dither_edge_0 && is_dark_lum;
-    wire no_dither_1 = is_dither_edge_1 && is_dark_lum;
-    wire no_dither_2 = is_dither_edge_2 && is_dark_lum;
-    wire no_dither_3 = is_dither_edge_3 && is_dark_lum;
+    // All pixels at edges: no dither for clean text
+    wire no_dither_0 = is_dither_edge_0;
+    wire no_dither_1 = is_dither_edge_1;
+    wire no_dither_2 = is_dither_edge_2;
+    wire no_dither_3 = is_dither_edge_3;
 
     wire [3:0] b0_adaptive = no_dither_0 ? 4'sd0 : b0_cfa_half;
     wire [3:0] b1_adaptive = no_dither_1 ? 4'sd0 : b1_cfa_half;
