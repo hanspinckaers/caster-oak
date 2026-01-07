@@ -793,10 +793,16 @@ module bayer_dithering #(
 
     // Content-adaptive dithering: halved bayer for smooth areas, NO dither for edges
     // Edges get pure quantization (cleaner text), smooth gets halved bayer (subtle gradients)
-    wire [3:0] b0_adaptive = (max_grad_0 > EDGE_THRESH_LOW) ? 4'sd0 : b0_cfa_half;
-    wire [3:0] b1_adaptive = (max_grad_1 > EDGE_THRESH_LOW) ? 4'sd0 : b1_cfa_half;
-    wire [3:0] b2_adaptive = (max_grad_2 > EDGE_THRESH_LOW) ? 4'sd0 : b2_cfa_half;
-    wire [3:0] b3_adaptive = (max_grad_3 > EDGE_THRESH_LOW) ? 4'sd0 : b3_cfa_half;
+    // Also disable dithering for bright pixels (>200) to prevent white halos around text
+    wire is_bright_0 = (pix0 > 8'd200);
+    wire is_bright_1 = (pix1 > 8'd200);
+    wire is_bright_2 = (pix2 > 8'd200);
+    wire is_bright_3 = (pix3 > 8'd200);
+
+    wire [3:0] b0_adaptive = (max_grad_0 > EDGE_THRESH_LOW || is_bright_0) ? 4'sd0 : b0_cfa_half;
+    wire [3:0] b1_adaptive = (max_grad_1 > EDGE_THRESH_LOW || is_bright_1) ? 4'sd0 : b1_cfa_half;
+    wire [3:0] b2_adaptive = (max_grad_2 > EDGE_THRESH_LOW || is_bright_2) ? 4'sd0 : b2_cfa_half;
+    wire [3:0] b3_adaptive = (max_grad_3 > EDGE_THRESH_LOW || is_bright_3) ? 4'sd0 : b3_cfa_half;
 
     // =========================================================================
     // Soft Edge Detection with Gradient-Weighted Blending
