@@ -559,10 +559,11 @@ module bayer_dithering #(
     wire [7:0] bias_2b_13 = (cfa_row == 1'b0) ? BIAS_2B_W : BIAS_2B_R;
 
     // Direct bias - max 24, no clamping needed
+    // pix1_sat/pix3_sat: for W (row 0), use light gray when saturated mid-dark
     wire [8:0] a0_2b = {1'b0, pix0} + {1'b0, bias_2b_02};
-    wire [8:0] a1_2b = {1'b0, pix1} + {1'b0, bias_2b_13};
+    wire [8:0] a1_2b = {1'b0, pix1_sat} + {1'b0, bias_2b_13};
     wire [8:0] a2_2b = {1'b0, pix2} + {1'b0, bias_2b_02};
-    wire [8:0] a3_2b = {1'b0, pix3} + {1'b0, bias_2b_13};
+    wire [8:0] a3_2b = {1'b0, pix3_sat} + {1'b0, bias_2b_13};
 
     wire [3:0] c0_2b, c1_2b, c2_2b, c3_2b;
     // Use content-adaptive CFA-balanced offsets (halved for edges, full for smooth)
@@ -587,10 +588,23 @@ module bayer_dithering #(
     wire [7:0] saturation = max_all - min_all;
     wire is_low_saturation = (saturation < 8'd30);
 
+    // Saturated mid-dark detection for W lightening
+    // Saturated colors with dark luminance get harsh dithering - boost W toward light gray
+    wire is_saturated = (saturation > 8'd50);
+
     // Luminance approximation: average of all pixels
     // (pix0 + pix1 + pix2 + pix3) / 4
     wire [9:0] lum_sum = {2'b0, pix0} + {2'b0, pix1} + {2'b0, pix2} + {2'b0, pix3};
     wire [7:0] luminance = lum_sum[9:2];  // Divide by 4
+
+    // Saturated mid-dark W adjustment for CFA path
+    // Bright W pixels in saturated color areas are distracting
+    // Use luminance instead of raw W so it matches the color's perceived brightness
+    wire is_mid_dark = (luminance < 8'd150);
+    wire is_sat_mid_dark = is_saturated && is_mid_dark;
+    // When saturated+mid-dark on W row, use luminance so W blends with color
+    wire [7:0] pix1_sat = (is_sat_mid_dark && cfa_row == 1'b0) ? luminance : pix1;
+    wire [7:0] pix3_sat = (is_sat_mid_dark && cfa_row == 1'b0) ? luminance : pix3;
 
     // W_LIGHTEN: Boost dark W pixels to reduce stroke weight on W columns
     // Only applies to W subpixels (row 0, odd columns = pix1, pix3)
