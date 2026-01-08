@@ -1000,33 +1000,32 @@ module bayer_dithering #(
     // 2. CFA Bayer dither: for everything else
 
     // =========================================================================
-    // Apply Neighbor Bias to Dithered Values
-    // Subtracting positive bias (pixel brighter than neighbors) makes harder to be bright
-    // At colored edges, darken output to thicken text strokes
+    // Apply Fixed Darkening at Colored Edges
+    // Simple approach: subtract 2 levels at colored edges for consistent stroke width
+    // Allows full 0-15 range for sharpness
     // =========================================================================
 
-    // neighbor_bias is fixed at 16 for colored edges, 0 otherwise
-    // Scale by >>> 3 to convert to 4-bit space: 16 >>> 3 = 2 levels
-    wire signed [5:0] bias_scaled_0 = neighbor_bias_0 >>> 3;
-    wire signed [5:0] bias_scaled_1 = neighbor_bias_1 >>> 3;
-    wire signed [5:0] bias_scaled_2 = neighbor_bias_2 >>> 3;
-    wire signed [5:0] bias_scaled_3 = neighbor_bias_3 >>> 3;
+    // Fixed darkening: -2 levels at colored edges, 0 otherwise
+    wire signed [4:0] darken_0 = is_colored_edge_0 ? -5'sd2 : 5'sd0;
+    wire signed [4:0] darken_1 = is_colored_edge_1 ? -5'sd2 : 5'sd0;
+    wire signed [4:0] darken_2 = is_colored_edge_2 ? -5'sd2 : 5'sd0;
+    wire signed [4:0] darken_3 = is_colored_edge_3 ? -5'sd2 : 5'sd0;
 
-    // Signed subtraction: c*_2b (unsigned 4-bit) - bias_scaled (signed)
-    wire signed [6:0] c0_biased_raw = $signed({3'b000, c0_2b}) - $signed(bias_scaled_0);
-    wire signed [6:0] c1_biased_raw = $signed({3'b000, c1_2b}) - $signed(bias_scaled_1);
-    wire signed [6:0] c2_biased_raw = $signed({3'b000, c2_2b}) - $signed(bias_scaled_2);
-    wire signed [6:0] c3_biased_raw = $signed({3'b000, c3_2b}) - $signed(bias_scaled_3);
+    // Apply darkening
+    wire signed [5:0] c0_biased_raw = $signed({2'b00, c0_2b}) + darken_0;
+    wire signed [5:0] c1_biased_raw = $signed({2'b00, c1_2b}) + darken_1;
+    wire signed [5:0] c2_biased_raw = $signed({2'b00, c2_2b}) + darken_2;
+    wire signed [5:0] c3_biased_raw = $signed({2'b00, c3_2b}) + darken_3;
 
-    // Clamp to 0-15 range
-    wire [3:0] c0_biased = (c0_biased_raw < 7'sd0) ? 4'd0 :
-                           (c0_biased_raw > 7'sd15) ? 4'd15 : c0_biased_raw[3:0];
-    wire [3:0] c1_biased = (c1_biased_raw < 7'sd0) ? 4'd0 :
-                           (c1_biased_raw > 7'sd15) ? 4'd15 : c1_biased_raw[3:0];
-    wire [3:0] c2_biased = (c2_biased_raw < 7'sd0) ? 4'd0 :
-                           (c2_biased_raw > 7'sd15) ? 4'd15 : c2_biased_raw[3:0];
-    wire [3:0] c3_biased = (c3_biased_raw < 7'sd0) ? 4'd0 :
-                           (c3_biased_raw > 7'sd15) ? 4'd15 : c3_biased_raw[3:0];
+    // Clamp to 0-15 range (allow full range for sharpness)
+    wire [3:0] c0_biased = (c0_biased_raw < 6'sd0) ? 4'd0 :
+                           (c0_biased_raw > 6'sd15) ? 4'd15 : c0_biased_raw[3:0];
+    wire [3:0] c1_biased = (c1_biased_raw < 6'sd0) ? 4'd0 :
+                           (c1_biased_raw > 6'sd15) ? 4'd15 : c1_biased_raw[3:0];
+    wire [3:0] c2_biased = (c2_biased_raw < 6'sd0) ? 4'd0 :
+                           (c2_biased_raw > 6'sd15) ? 4'd15 : c2_biased_raw[3:0];
+    wire [3:0] c3_biased = (c3_biased_raw < 6'sd0) ? 4'd0 :
+                           (c3_biased_raw > 6'sd15) ? 4'd15 : c3_biased_raw[3:0];
 
     // Per-CFA threshold quantization (level 3 threshold fixed at 12)
     // Now uses biased values for consistent colored text stroke width
