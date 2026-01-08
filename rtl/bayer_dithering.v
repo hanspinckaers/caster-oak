@@ -49,6 +49,7 @@ module bayer_dithering #(
     input wire                       rst,
     input wire [31:0]                vin,        // Input for 2-bit path (FAST_GREY)
     input wire [31:0]                vin_1b,     // Input for 1-bit path (FAST_MONO) - can use different degamma
+    input wire [3:0]                 is_colored_in, // True RGB saturation flags from vin_colormixer
     output reg [3:0]                 vout_1b,    // 1-bit per pixel (FAST_MONO) - uses 3x3
     output reg [7:0]                 vout_2b,    // 2-bit per pixel (FAST_GREY) - uses 8x8
     input wire [10:0]                x_cnt,      // Full x counter for line buffer addressing
@@ -583,74 +584,63 @@ module bayer_dithering #(
     // At colored text edges, apply darkening bias to compensate for CFA thinning
     // =========================================================================
 
-    // Detect colored edges using per-pixel RGB saturation
-    // Reconstruct approximate RGB at each pixel using CFA neighbors:
-    // Row 0 (cfa_row=0): pix=B,W,B,W  prev1_line=G,R,G,R
-    // Row 1 (cfa_row=1): pix=G,R,G,R  prev1_line=B,W,B,W
-    // For each pixel, gather nearest R, G, B and compute saturation = max - min
+    // Use true RGB saturation passed from vin_colormixer (is_colored_in)
+    // This is computed BEFORE CFA sampling, so it's accurate even at edges
+    // Combined with gradient to detect colored edges specifically
+    wire is_colored_edge_0 = is_colored_in[0] && (max_grad_0 > 8'd20);
+    wire is_colored_edge_1 = is_colored_in[1] && (max_grad_1 > 8'd20);
+    wire is_colored_edge_2 = is_colored_in[2] && (max_grad_2 > 8'd20);
+    wire is_colored_edge_3 = is_colored_in[3] && (max_grad_3 > 8'd20);
 
-    // Pixel 0 RGB reconstruction
-    // cfa_row=0: pix0=B, prev1_line=GR  -> R=prev_pix1, G=prev_pix0, B=pix0
-    // cfa_row=1: pix0=G, prev1_line=BW  -> R=pix1, G=pix0, B=prev_pix0
-    wire [7:0] pix0_r = cfa_row ? pix1 : prev1_line_pix1;
-    wire [7:0] pix0_g = cfa_row ? pix0 : prev1_line_pix0;
-    wire [7:0] pix0_b = cfa_row ? prev1_line_pix0 : pix0;
-    wire [7:0] pix0_max = (pix0_r > pix0_g) ? ((pix0_r > pix0_b) ? pix0_r : pix0_b) :
-                                               ((pix0_g > pix0_b) ? pix0_g : pix0_b);
-    wire [7:0] pix0_min = (pix0_r < pix0_g) ? ((pix0_r < pix0_b) ? pix0_r : pix0_b) :
-                                               ((pix0_g < pix0_b) ? pix0_g : pix0_b);
-    wire [7:0] pix0_sat = pix0_max - pix0_min;
+    // Compute neighbor average for each pixel (up + left + right) / 3
+    // Python: neighbor_avg = (up + down + left + right) / 4
+    // We use 3 neighbors since "down" requires another line buffer
+    // pix0: left=prev_pix3, right=pix1, up=prev1_line_pix0
+    // pix1: left=pix0, right=pix2, up=prev1_line_pix1
+    // pix2: left=pix1, right=pix3, up=prev1_line_pix2
+    // pix3: left=pix2, right=pix2 (proxy), up=prev1_line_pix3
+    wire [9:0] neighbor_sum_0 = {2'b0, prev_pix3} + {2'b0, pix1} + {2'b0, prev1_line_pix0};
+    wire [9:0] neighbor_sum_1 = {2'b0, pix0} + {2'b0, pix2} + {2'b0, prev1_line_pix1};
+    wire [9:0] neighbor_sum_2 = {2'b0, pix1} + {2'b0, pix3} + {2'b0, prev1_line_pix2};
+    wire [9:0] neighbor_sum_3 = {2'b0, pix2} + {2'b0, pix2} + {2'b0, prev1_line_pix3};
 
-    // Pixel 1 RGB reconstruction
-    // cfa_row=0: pix1=W, prev1_line=GR  -> R=prev_pix1, G=prev_pix0, B=pix0
-    // cfa_row=1: pix1=R, prev1_line=BW  -> R=pix1, G=pix0, B=prev_pix0
-    wire [7:0] pix1_r = cfa_row ? pix1 : prev1_line_pix1;
-    wire [7:0] pix1_g = cfa_row ? pix0 : prev1_line_pix0;
-    wire [7:0] pix1_b = cfa_row ? prev1_line_pix0 : pix0;
-    wire [7:0] pix1_max = (pix1_r > pix1_g) ? ((pix1_r > pix1_b) ? pix1_r : pix1_b) :
-                                               ((pix1_g > pix1_b) ? pix1_g : pix1_b);
-    wire [7:0] pix1_min = (pix1_r < pix1_g) ? ((pix1_r < pix1_b) ? pix1_r : pix1_b) :
-                                               ((pix1_g < pix1_b) ? pix1_g : pix1_b);
-    wire [7:0] pix1_sat = pix1_max - pix1_min;
+    // Divide by 3: approximate as (sum * 85) >> 8 ≈ sum * 0.332
+    // Or simpler: (sum * 11) >> 5 = sum * 0.34375 (close enough)
+    wire [13:0] neighbor_prod_0 = neighbor_sum_0 * 11;
+    wire [13:0] neighbor_prod_1 = neighbor_sum_1 * 11;
+    wire [13:0] neighbor_prod_2 = neighbor_sum_2 * 11;
+    wire [13:0] neighbor_prod_3 = neighbor_sum_3 * 11;
+    wire [7:0] neighbor_avg_0 = neighbor_prod_0[12:5];
+    wire [7:0] neighbor_avg_1 = neighbor_prod_1[12:5];
+    wire [7:0] neighbor_avg_2 = neighbor_prod_2[12:5];
+    wire [7:0] neighbor_avg_3 = neighbor_prod_3[12:5];
 
-    // Pixel 2 RGB reconstruction
-    // cfa_row=0: pix2=B, prev1_line=GR  -> R=prev_pix3, G=prev_pix2, B=pix2
-    // cfa_row=1: pix2=G, prev1_line=BW  -> R=pix3, G=pix2, B=prev_pix2
-    wire [7:0] pix2_r = cfa_row ? pix3 : prev1_line_pix3;
-    wire [7:0] pix2_g = cfa_row ? pix2 : prev1_line_pix2;
-    wire [7:0] pix2_b = cfa_row ? prev1_line_pix2 : pix2;
-    wire [7:0] pix2_max = (pix2_r > pix2_g) ? ((pix2_r > pix2_b) ? pix2_r : pix2_b) :
-                                               ((pix2_g > pix2_b) ? pix2_g : pix2_b);
-    wire [7:0] pix2_min = (pix2_r < pix2_g) ? ((pix2_r < pix2_b) ? pix2_r : pix2_b) :
-                                               ((pix2_g < pix2_b) ? pix2_g : pix2_b);
-    wire [7:0] pix2_sat = pix2_max - pix2_min;
+    // Compute diff = pixel - neighbor_avg (signed)
+    wire signed [8:0] diff_0 = $signed({1'b0, pix0}) - $signed({1'b0, neighbor_avg_0});
+    wire signed [8:0] diff_1 = $signed({1'b0, pix1}) - $signed({1'b0, neighbor_avg_1});
+    wire signed [8:0] diff_2 = $signed({1'b0, pix2}) - $signed({1'b0, neighbor_avg_2});
+    wire signed [8:0] diff_3 = $signed({1'b0, pix3}) - $signed({1'b0, neighbor_avg_3});
 
-    // Pixel 3 RGB reconstruction
-    // cfa_row=0: pix3=W, prev1_line=GR  -> R=prev_pix3, G=prev_pix2, B=pix2
-    // cfa_row=1: pix3=R, prev1_line=BW  -> R=pix3, G=pix2, B=prev_pix2
-    wire [7:0] pix3_r = cfa_row ? pix3 : prev1_line_pix3;
-    wire [7:0] pix3_g = cfa_row ? pix2 : prev1_line_pix2;
-    wire [7:0] pix3_b = cfa_row ? prev1_line_pix2 : pix2;
-    wire [7:0] pix3_max = (pix3_r > pix3_g) ? ((pix3_r > pix3_b) ? pix3_r : pix3_b) :
-                                               ((pix3_g > pix3_b) ? pix3_g : pix3_b);
-    wire [7:0] pix3_min = (pix3_r < pix3_g) ? ((pix3_r < pix3_b) ? pix3_r : pix3_b) :
-                                               ((pix3_g < pix3_b) ? pix3_g : pix3_b);
-    wire [7:0] pix3_sat = pix3_max - pix3_min;
+    // Scale by ~0.3: multiply by 5, divide by 16
+    wire signed [12:0] scaled_0 = diff_0 * 5;
+    wire signed [12:0] scaled_1 = diff_1 * 5;
+    wire signed [12:0] scaled_2 = diff_2 * 5;
+    wire signed [12:0] scaled_3 = diff_3 * 5;
+    wire signed [8:0] bias_0 = scaled_0 >>> 4;
+    wire signed [8:0] bias_1 = scaled_1 >>> 4;
+    wire signed [8:0] bias_2 = scaled_2 >>> 4;
+    wire signed [8:0] bias_3 = scaled_3 >>> 4;
 
-    // Detect colored edges: high saturation AND gradient present
-    // saturation > 50 means significant color difference in reconstructed RGB
-    // gradient > 20 means we're at an edge, not smooth colored area
-    wire is_colored_edge_0 = (pix0_sat > 8'd50) && (max_grad_0 > 8'd20);
-    wire is_colored_edge_1 = (pix1_sat > 8'd50) && (max_grad_1 > 8'd20);
-    wire is_colored_edge_2 = (pix2_sat > 8'd50) && (max_grad_2 > 8'd20);
-    wire is_colored_edge_3 = (pix3_sat > 8'd50) && (max_grad_3 > 8'd20);
+    // Clamp bias to ±31 and apply only at colored edges
+    wire signed [5:0] clamped_bias_0 = (bias_0 > 9'sd31) ? 6'sd31 : (bias_0 < -9'sd32) ? -6'sd32 : bias_0[5:0];
+    wire signed [5:0] clamped_bias_1 = (bias_1 > 9'sd31) ? 6'sd31 : (bias_1 < -9'sd32) ? -6'sd32 : bias_1[5:0];
+    wire signed [5:0] clamped_bias_2 = (bias_2 > 9'sd31) ? 6'sd31 : (bias_2 < -9'sd32) ? -6'sd32 : bias_2[5:0];
+    wire signed [5:0] clamped_bias_3 = (bias_3 > 9'sd31) ? 6'sd31 : (bias_3 < -9'sd32) ? -6'sd32 : bias_3[5:0];
 
-    // At colored edges, apply fixed darkening bias to thicken strokes
-    // Bias of 16 >>> 3 = 2 levels darker in 4-bit quantization space
-    wire signed [5:0] neighbor_bias_0 = is_colored_edge_0 ? 6'sd16 : 6'sd0;
-    wire signed [5:0] neighbor_bias_1 = is_colored_edge_1 ? 6'sd16 : 6'sd0;
-    wire signed [5:0] neighbor_bias_2 = is_colored_edge_2 ? 6'sd16 : 6'sd0;
-    wire signed [5:0] neighbor_bias_3 = is_colored_edge_3 ? 6'sd16 : 6'sd0;
+    wire signed [5:0] neighbor_bias_0 = is_colored_edge_0 ? clamped_bias_0 : 6'sd0;
+    wire signed [5:0] neighbor_bias_1 = is_colored_edge_1 ? clamped_bias_1 : 6'sd0;
+    wire signed [5:0] neighbor_bias_2 = is_colored_edge_2 ? clamped_bias_2 : 6'sd0;
+    wire signed [5:0] neighbor_bias_3 = is_colored_edge_3 ? clamped_bias_3 : 6'sd0;
 
     // Per-CFA threshold selection
     wire [3:0] thresh_02_1 = (cfa_row == 1'b0) ? THRESH_B_1 : THRESH_G_1;

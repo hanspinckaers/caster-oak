@@ -19,6 +19,8 @@ module vin_colormixer(
     input  wire [47:0]  in_color,
     input  wire         in_valid,
     output reg  [15:0]  out_color,
+    // Note: In RGBW mode, is_colored flags are packed into out_color[8] and out_color[0]
+    // (LSB of even and odd pixels respectively) for transport through FIFO
     output reg          out_valid
 );
 
@@ -33,6 +35,23 @@ module vin_colormixer(
 
     wire [7:0] y_odd;
     wire [7:0] y_even;
+
+    // Compute per-pixel saturation from true RGB for colored edge detection
+    // Saturation = max(R,G,B) - min(R,G,B)
+    // is_colored if saturation > 20% of 64 = 12
+    wire [5:0] max_rgb_odd = (r_odd > g_odd) ? ((r_odd > b_odd) ? r_odd : b_odd) :
+                                               ((g_odd > b_odd) ? g_odd : b_odd);
+    wire [5:0] min_rgb_odd = (r_odd < g_odd) ? ((r_odd < b_odd) ? r_odd : b_odd) :
+                                               ((g_odd < b_odd) ? g_odd : b_odd);
+    wire [5:0] sat_odd = max_rgb_odd - min_rgb_odd;
+    wire is_colored_odd = (sat_odd > 6'd12);
+
+    wire [5:0] max_rgb_even = (r_even > g_even) ? ((r_even > b_even) ? r_even : b_even) :
+                                                  ((g_even > b_even) ? g_even : b_even);
+    wire [5:0] min_rgb_even = (r_even < g_even) ? ((r_even < b_even) ? r_even : b_even) :
+                                                  ((g_even < b_even) ? g_even : b_even);
+    wire [5:0] sat_even = max_rgb_even - min_rgb_even;
+    wire is_colored_even = (sat_even > 6'd12);
 
     // Processing for mono
     generate
@@ -123,14 +142,18 @@ module vin_colormixer(
         wire [5:0] w_odd = r_g_b_min;
         assign y_odd[7:2] = (c_cnt_y == 1'b0) ? (w_odd) : (r_odd);
         assign y_even[7:2] = (c_cnt_y == 1'b0) ? (b_even) : (g_even);
-        assign y_odd[1:0] = y_odd[7:6];
-        assign y_even[1:0] = y_even[7:6];
+        // Pack is_colored into LSB for transport through FIFO
+        // Bit 1 preserves some precision, bit 0 carries is_colored flag
+        assign y_odd[1] = y_odd[7];
+        assign y_odd[0] = is_colored_odd;
+        assign y_even[1] = y_even[7];
+        assign y_even[0] = is_colored_even;
     end
     endgenerate
 
     always @(posedge clk) begin
         out_valid <= in_valid;
-        out_color = {y_even, y_odd};
+        out_color <= {y_even, y_odd};
     end
 
 endmodule

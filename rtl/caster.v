@@ -289,9 +289,10 @@ module caster(
     localparam DOPING_INTERVAL = 8'd125;
 
     // Frame skip for reducing grey input rate (haze testing)
-    // 3-bit counter: skip when != 0 (7 out of 8 frames)
-    reg [2:0] frame_skip_cnt;
-    wire frame_skip_input = (frame_skip_cnt != 3'd0);
+    // DISABLED for now
+    // reg [1:0] frame_skip_cnt;
+    // wire frame_skip_input = (frame_skip_cnt != 2'd0);
+    wire frame_skip_input = 1'b0;
 
     always @(posedge clk) begin
         case (scan_state)
@@ -335,8 +336,8 @@ module caster(
                     doping_counter <= doping_counter - 8'd1;
                     doping_pulse <= 1'b0;
                 end
-                // Cycle frame skip counter: 0→7→0 (skip 7 of 8 for grey/interrupted)
-                frame_skip_cnt <= frame_skip_cnt + 3'd1;
+                // Frame skip counter disabled
+                // frame_skip_cnt <= frame_skip_cnt + 2'd1;
             end
             else begin
                 scan_h_cnt <= scan_h_cnt + 1;
@@ -376,7 +377,7 @@ module caster(
             al_framecnt <= 0;
             doping_counter <= DOPING_INTERVAL;
             doping_pulse <= 1'b0;
-            frame_skip_cnt <= 3'd0;
+            // frame_skip_cnt <= 2'd0;
         end
     end
 
@@ -671,6 +672,11 @@ module caster(
         .y_pos(bn_y_pos)
     );
 
+    // Extract is_colored flags from pixel LSBs (packed in vin_colormixer for RGBW mode)
+    // These indicate true RGB saturation computed before CFA sampling
+    wire [3:0] s2_is_colored = {s2_vin_selected[24], s2_vin_selected[16],
+                                 s2_vin_selected[8], s2_vin_selected[0]};
+
     bayer_dithering #(
         .COLORMODE(COLORMODE),
         .LINE_WIDTH_MAX(2200) // Max pixels per line for edge detection buffer
@@ -679,6 +685,7 @@ module caster(
         .rst(rst),
         .vin(s2_pixel_linear),         // 1.5 gamma for 2-bit FAST_GREY (brighter midtones)
         .vin_1b(s2_pixel_linear_22),   // 2.2 gamma for 1-bit FAST_MONO
+        .is_colored_in(s2_is_colored), // True RGB saturation flags from vin_colormixer
         .vout_1b(s3_pixel_bayer_1b),   // 1-bit for FAST_MONO (3x3 Bayer)
         .vout_2b(s3_pixel_bayer_2b),   // 2-bit for FAST_GREY (4x4 CFA-balanced)
         .x_cnt(scan_h_cnt),
