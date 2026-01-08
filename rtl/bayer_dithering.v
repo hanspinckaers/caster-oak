@@ -619,12 +619,66 @@ module bayer_dithering #(
     wire signed [8:0] input_bias_2 = diff_scaled_2 >>> 4;
     wire signed [8:0] input_bias_3 = diff_scaled_3 >>> 4;
 
-    // Only apply to colored edges (high saturation + edge)
-    // Saturation already computed as 'saturation', edge as max_grad_*
-    wire is_colored_edge_0 = (saturation > 8'd50) && (max_grad_0 > 8'd20);
-    wire is_colored_edge_1 = (saturation > 8'd50) && (max_grad_1 > 8'd20);
-    wire is_colored_edge_2 = (saturation > 8'd50) && (max_grad_2 > 8'd20);
-    wire is_colored_edge_3 = (saturation > 8'd50) && (max_grad_3 > 8'd20);
+    // Only apply to colored edges - detect using per-pixel RGB saturation like Python
+    // Reconstruct approximate RGB at each pixel using CFA neighbors:
+    // Row 0 (cfa_row=0): pix=B,W,B,W  prev1_line=G,R,G,R
+    // Row 1 (cfa_row=1): pix=G,R,G,R  prev1_line=B,W,B,W
+    // For each pixel, gather nearest R, G, B and compute saturation = max - min
+
+    // Pixel 0 RGB reconstruction
+    // cfa_row=0: pix0=B, prev1_line=GR  -> R=prev_pix1, G=prev_pix0, B=pix0
+    // cfa_row=1: pix0=G, prev1_line=BW  -> R=pix1, G=pix0, B=prev_pix0
+    wire [7:0] pix0_r = cfa_row ? pix1 : prev1_line_pix1;
+    wire [7:0] pix0_g = cfa_row ? pix0 : prev1_line_pix0;
+    wire [7:0] pix0_b = cfa_row ? prev1_line_pix0 : pix0;
+    wire [7:0] pix0_max = (pix0_r > pix0_g) ? ((pix0_r > pix0_b) ? pix0_r : pix0_b) :
+                                               ((pix0_g > pix0_b) ? pix0_g : pix0_b);
+    wire [7:0] pix0_min = (pix0_r < pix0_g) ? ((pix0_r < pix0_b) ? pix0_r : pix0_b) :
+                                               ((pix0_g < pix0_b) ? pix0_g : pix0_b);
+    wire [7:0] pix0_sat = pix0_max - pix0_min;
+
+    // Pixel 1 RGB reconstruction
+    // cfa_row=0: pix1=W, prev1_line=GR  -> R=prev_pix1, G=prev_pix0, B=pix0
+    // cfa_row=1: pix1=R, prev1_line=BW  -> R=pix1, G=pix0, B=prev_pix0
+    wire [7:0] pix1_r = cfa_row ? pix1 : prev1_line_pix1;
+    wire [7:0] pix1_g = cfa_row ? pix0 : prev1_line_pix0;
+    wire [7:0] pix1_b = cfa_row ? prev1_line_pix0 : pix0;
+    wire [7:0] pix1_max = (pix1_r > pix1_g) ? ((pix1_r > pix1_b) ? pix1_r : pix1_b) :
+                                               ((pix1_g > pix1_b) ? pix1_g : pix1_b);
+    wire [7:0] pix1_min = (pix1_r < pix1_g) ? ((pix1_r < pix1_b) ? pix1_r : pix1_b) :
+                                               ((pix1_g < pix1_b) ? pix1_g : pix1_b);
+    wire [7:0] pix1_sat = pix1_max - pix1_min;
+
+    // Pixel 2 RGB reconstruction
+    // cfa_row=0: pix2=B, prev1_line=GR  -> R=prev_pix3, G=prev_pix2, B=pix2
+    // cfa_row=1: pix2=G, prev1_line=BW  -> R=pix3, G=pix2, B=prev_pix2
+    wire [7:0] pix2_r = cfa_row ? pix3 : prev1_line_pix3;
+    wire [7:0] pix2_g = cfa_row ? pix2 : prev1_line_pix2;
+    wire [7:0] pix2_b = cfa_row ? prev1_line_pix2 : pix2;
+    wire [7:0] pix2_max = (pix2_r > pix2_g) ? ((pix2_r > pix2_b) ? pix2_r : pix2_b) :
+                                               ((pix2_g > pix2_b) ? pix2_g : pix2_b);
+    wire [7:0] pix2_min = (pix2_r < pix2_g) ? ((pix2_r < pix2_b) ? pix2_r : pix2_b) :
+                                               ((pix2_g < pix2_b) ? pix2_g : pix2_b);
+    wire [7:0] pix2_sat = pix2_max - pix2_min;
+
+    // Pixel 3 RGB reconstruction
+    // cfa_row=0: pix3=W, prev1_line=GR  -> R=prev_pix3, G=prev_pix2, B=pix2
+    // cfa_row=1: pix3=R, prev1_line=BW  -> R=pix3, G=pix2, B=prev_pix2
+    wire [7:0] pix3_r = cfa_row ? pix3 : prev1_line_pix3;
+    wire [7:0] pix3_g = cfa_row ? pix2 : prev1_line_pix2;
+    wire [7:0] pix3_b = cfa_row ? prev1_line_pix2 : pix2;
+    wire [7:0] pix3_max = (pix3_r > pix3_g) ? ((pix3_r > pix3_b) ? pix3_r : pix3_b) :
+                                               ((pix3_g > pix3_b) ? pix3_g : pix3_b);
+    wire [7:0] pix3_min = (pix3_r < pix3_g) ? ((pix3_r < pix3_b) ? pix3_r : pix3_b) :
+                                               ((pix3_g < pix3_b) ? pix3_g : pix3_b);
+    wire [7:0] pix3_sat = pix3_max - pix3_min;
+
+    // Python: saturation > 0.2 means (max-min)/(max+1) > 0.2
+    // At max=255: need diff > 51. At max=128: need diff > 26. Use ~50 as threshold.
+    wire is_colored_edge_0 = (pix0_sat > 8'd50) && (max_grad_0 > 8'd20);
+    wire is_colored_edge_1 = (pix1_sat > 8'd50) && (max_grad_1 > 8'd20);
+    wire is_colored_edge_2 = (pix2_sat > 8'd50) && (max_grad_2 > 8'd20);
+    wire is_colored_edge_3 = (pix3_sat > 8'd50) && (max_grad_3 > 8'd20);
 
     // Final bias: apply input_bias only at colored edges, clamp to reasonable range
     // Clamp to ±31 (5 bits signed) since bias can be larger now with 0.3 scale
