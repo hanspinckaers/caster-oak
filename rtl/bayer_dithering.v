@@ -570,6 +570,76 @@ module bayer_dithering #(
     wire [7:0] bias_2b_02 = (cfa_row == 1'b0) ? BIAS_2B_B : BIAS_2B_G;
     wire [7:0] bias_2b_13 = (cfa_row == 1'b0) ? BIAS_2B_W : BIAS_2B_R;
 
+    // =========================================================================
+    // Input-Based Neighbor Bias for Consistent Colored Text Stroke Width
+    // At colored edges, if pixel differs from neighbors, bias toward neighbors
+    // This normalizes stroke width by snapping outlier pixels
+    // IMPORTANT: Uses IMMEDIATE neighbors (1 pixel away), not same-color neighbors!
+    // Python: neighbor_avg = (up + down + left + right) / 4
+    // =========================================================================
+
+    // Immediate neighbor values (1 pixel away, different CFA colors)
+    // Horizontal: pix0's left is prev_pix3, pix1's left is pix0, etc.
+    // Vertical: use prev1_line (1 line back), not prev2_line (2 lines back)
+
+    // 4-neighbor average for each pixel (immediate neighbors, 1 pixel/line away)
+    // pix0: left=prev_pix3, right=pix1, up=prev1_line_pix0, down≈up (proxy)
+    // For RTL, we approximate down with prev1 since we don't have next line
+    wire [9:0] neighbor_sum_0 = {2'b0, prev_pix3} + {2'b0, pix1} +
+                                 {2'b0, prev1_line_pix0} + {2'b0, prev1_line_pix0};  // up+down ≈ 2*up
+    wire [9:0] neighbor_sum_1 = {2'b0, pix0} + {2'b0, pix2} +
+                                 {2'b0, prev1_line_pix1} + {2'b0, prev1_line_pix1};
+    wire [9:0] neighbor_sum_2 = {2'b0, pix1} + {2'b0, pix3} +
+                                 {2'b0, prev1_line_pix2} + {2'b0, prev1_line_pix2};
+    wire [9:0] neighbor_sum_3 = {2'b0, pix2} + {2'b0, prev_pix0} +  // right neighbor is next group's pix0, use prev
+                                 {2'b0, prev1_line_pix3} + {2'b0, prev1_line_pix3};
+
+    wire [7:0] neighbor_avg_0 = neighbor_sum_0[9:2];  // /4
+    wire [7:0] neighbor_avg_1 = neighbor_sum_1[9:2];
+    wire [7:0] neighbor_avg_2 = neighbor_sum_2[9:2];
+    wire [7:0] neighbor_avg_3 = neighbor_sum_3[9:2];
+
+    // Difference from neighbor average (signed) - computed on PRE-degamma values
+    wire signed [8:0] diff_0 = $signed({1'b0, pix0}) - $signed({1'b0, neighbor_avg_0});
+    wire signed [8:0] diff_1 = $signed({1'b0, pix1}) - $signed({1'b0, neighbor_avg_1});
+    wire signed [8:0] diff_2 = $signed({1'b0, pix2}) - $signed({1'b0, neighbor_avg_2});
+    wire signed [8:0] diff_3 = $signed({1'b0, pix3}) - $signed({1'b0, neighbor_avg_3});
+
+    // Scale by ~0.3 ≈ 5/16 (multiply by 5, shift right by 4)
+    // diff * 5 / 16 ≈ diff * 0.3125
+    wire signed [12:0] diff_scaled_0 = diff_0 * 5;
+    wire signed [12:0] diff_scaled_1 = diff_1 * 5;
+    wire signed [12:0] diff_scaled_2 = diff_2 * 5;
+    wire signed [12:0] diff_scaled_3 = diff_3 * 5;
+
+    wire signed [8:0] input_bias_0 = diff_scaled_0 >>> 4;
+    wire signed [8:0] input_bias_1 = diff_scaled_1 >>> 4;
+    wire signed [8:0] input_bias_2 = diff_scaled_2 >>> 4;
+    wire signed [8:0] input_bias_3 = diff_scaled_3 >>> 4;
+
+    // Only apply to colored edges (high saturation + edge)
+    // Saturation already computed as 'saturation', edge as max_grad_*
+    wire is_colored_edge_0 = (saturation > 8'd50) && (max_grad_0 > 8'd20);
+    wire is_colored_edge_1 = (saturation > 8'd50) && (max_grad_1 > 8'd20);
+    wire is_colored_edge_2 = (saturation > 8'd50) && (max_grad_2 > 8'd20);
+    wire is_colored_edge_3 = (saturation > 8'd50) && (max_grad_3 > 8'd20);
+
+    // Final bias: apply input_bias only at colored edges, clamp to reasonable range
+    // Clamp to ±31 (5 bits signed) since bias can be larger now with 0.3 scale
+    wire signed [5:0] clamp_bias_0 = (input_bias_0 > 9'sd31) ? 6'sd31 :
+                                      (input_bias_0 < -9'sd32) ? -6'sd32 : input_bias_0[5:0];
+    wire signed [5:0] clamp_bias_1 = (input_bias_1 > 9'sd31) ? 6'sd31 :
+                                      (input_bias_1 < -9'sd32) ? -6'sd32 : input_bias_1[5:0];
+    wire signed [5:0] clamp_bias_2 = (input_bias_2 > 9'sd31) ? 6'sd31 :
+                                      (input_bias_2 < -9'sd32) ? -6'sd32 : input_bias_2[5:0];
+    wire signed [5:0] clamp_bias_3 = (input_bias_3 > 9'sd31) ? 6'sd31 :
+                                      (input_bias_3 < -9'sd32) ? -6'sd32 : input_bias_3[5:0];
+
+    wire signed [5:0] neighbor_bias_0 = is_colored_edge_0 ? clamp_bias_0 : 6'sd0;
+    wire signed [5:0] neighbor_bias_1 = is_colored_edge_1 ? clamp_bias_1 : 6'sd0;
+    wire signed [5:0] neighbor_bias_2 = is_colored_edge_2 ? clamp_bias_2 : 6'sd0;
+    wire signed [5:0] neighbor_bias_3 = is_colored_edge_3 ? clamp_bias_3 : 6'sd0;
+
     // Per-CFA threshold selection
     wire [3:0] thresh_02_1 = (cfa_row == 1'b0) ? THRESH_B_1 : THRESH_G_1;
     wire [3:0] thresh_02_2 = (cfa_row == 1'b0) ? THRESH_B_2 : THRESH_G_2;
@@ -779,6 +849,8 @@ module bayer_dithering #(
     // Previous line pixels (opposite CFA row: if current is BW, prev1 is GR)
     wire [7:0] prev1_line_pix0 = prev1_line_pixels[31:24];
     wire [7:0] prev1_line_pix1 = prev1_line_pixels[23:16];
+    wire [7:0] prev1_line_pix2 = prev1_line_pixels[15:8];
+    wire [7:0] prev1_line_pix3 = prev1_line_pixels[7:0];
     
     // Cascade write: current -> buffer_0 -> buffer_1
     always @(posedge clk) begin
@@ -925,19 +997,52 @@ module bayer_dithering #(
     // 1. Grayscale (200dpi): for black text on white (edge + low sat + bright bg + dark pixel)
     // 2. CFA Bayer dither: for everything else
 
+    // =========================================================================
+    // Apply Neighbor Bias to Dithered Values
+    // Subtracting positive bias (pixel brighter than neighbors) makes harder to be bright
+    // Subtracting negative bias (pixel darker than neighbors) makes easier to be bright
+    // This normalizes stroke width for colored text
+    // =========================================================================
+
+    // The bias is in 8-bit space (diff * 0.3, range roughly ±75)
+    // c*_2b is in 4-bit space (0-15), thresholds at 4,8,12 = 64,128,192 in 8-bit
+    // To convert bias to 4-bit space: divide by 16 (>>> 4)
+    // But that loses too much precision. Instead, scale by 1/8 (>>> 3) for more effect.
+    wire signed [5:0] bias_scaled_0 = neighbor_bias_0 >>> 3;
+    wire signed [5:0] bias_scaled_1 = neighbor_bias_1 >>> 3;
+    wire signed [5:0] bias_scaled_2 = neighbor_bias_2 >>> 3;
+    wire signed [5:0] bias_scaled_3 = neighbor_bias_3 >>> 3;
+
+    // Signed subtraction: c*_2b (unsigned 4-bit) - bias_scaled (signed)
+    wire signed [6:0] c0_biased_raw = $signed({3'b000, c0_2b}) - $signed(bias_scaled_0);
+    wire signed [6:0] c1_biased_raw = $signed({3'b000, c1_2b}) - $signed(bias_scaled_1);
+    wire signed [6:0] c2_biased_raw = $signed({3'b000, c2_2b}) - $signed(bias_scaled_2);
+    wire signed [6:0] c3_biased_raw = $signed({3'b000, c3_2b}) - $signed(bias_scaled_3);
+
+    // Clamp to 0-15 range
+    wire [3:0] c0_biased = (c0_biased_raw < 7'sd0) ? 4'd0 :
+                           (c0_biased_raw > 7'sd15) ? 4'd15 : c0_biased_raw[3:0];
+    wire [3:0] c1_biased = (c1_biased_raw < 7'sd0) ? 4'd0 :
+                           (c1_biased_raw > 7'sd15) ? 4'd15 : c1_biased_raw[3:0];
+    wire [3:0] c2_biased = (c2_biased_raw < 7'sd0) ? 4'd0 :
+                           (c2_biased_raw > 7'sd15) ? 4'd15 : c2_biased_raw[3:0];
+    wire [3:0] c3_biased = (c3_biased_raw < 7'sd0) ? 4'd0 :
+                           (c3_biased_raw > 7'sd15) ? 4'd15 : c3_biased_raw[3:0];
+
     // Per-CFA threshold quantization (level 3 threshold fixed at 12)
-    wire [1:0] quant_02 = (c0_2b >= 4'd12) ? 2'd3 :
-                          (c0_2b >= thresh_02_2) ? 2'd2 :
-                          (c0_2b >= thresh_02_1) ? 2'd1 : 2'd0;
-    wire [1:0] quant_13 = (c1_2b >= 4'd12) ? 2'd3 :
-                          (c1_2b >= thresh_13_2) ? 2'd2 :
-                          (c1_2b >= thresh_13_1) ? 2'd1 : 2'd0;
-    wire [1:0] quant_22 = (c2_2b >= 4'd12) ? 2'd3 :
-                          (c2_2b >= thresh_02_2) ? 2'd2 :
-                          (c2_2b >= thresh_02_1) ? 2'd1 : 2'd0;
-    wire [1:0] quant_33 = (c3_2b >= 4'd12) ? 2'd3 :
-                          (c3_2b >= thresh_13_2) ? 2'd2 :
-                          (c3_2b >= thresh_13_1) ? 2'd1 : 2'd0;
+    // Now uses biased values for consistent colored text stroke width
+    wire [1:0] quant_02 = (c0_biased >= 4'd12) ? 2'd3 :
+                          (c0_biased >= thresh_02_2) ? 2'd2 :
+                          (c0_biased >= thresh_02_1) ? 2'd1 : 2'd0;
+    wire [1:0] quant_13 = (c1_biased >= 4'd12) ? 2'd3 :
+                          (c1_biased >= thresh_13_2) ? 2'd2 :
+                          (c1_biased >= thresh_13_1) ? 2'd1 : 2'd0;
+    wire [1:0] quant_22 = (c2_biased >= 4'd12) ? 2'd3 :
+                          (c2_biased >= thresh_02_2) ? 2'd2 :
+                          (c2_biased >= thresh_02_1) ? 2'd1 : 2'd0;
+    wire [1:0] quant_33 = (c3_biased >= 4'd12) ? 2'd3 :
+                          (c3_biased >= thresh_13_2) ? 2'd2 :
+                          (c3_biased >= thresh_13_1) ? 2'd1 : 2'd0;
 
     wire [1:0] out0_2b = (pix0 >= 8'd250) ? 2'b11 : (pix0 <= 8'd5) ? 2'b00 :
                          use_gray_0 ? c0_gray[3:2] : quant_02;
