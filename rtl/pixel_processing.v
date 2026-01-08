@@ -486,7 +486,7 @@ module pixel_processing(
                 // - Actually mid-drive, not first frame (fg_frames <= 4 means driven 2+ frames)
                 // - For grey targets: not in video mode (video mode completes to mono extreme)
                 // - For B/W targets: always allow reversal (no haze issue)
-                if (!frame_skip_input && (proc_vin[3] != pixel_prev[1]) && (pixel_mindrv == 2'd0) && (fg_frames <= 4'd4) &&
+                if ((proc_vin[3] != pixel_prev[1]) && (pixel_mindrv == 2'd0) && (fg_frames <= 4'd4) &&
                     !(fg_is_grey_target && (fg_counter >= 2'd3))) begin
                     // Binary direction changed mid-transition - proportional reversal
                     // Only increment fg_counter if grey involved AND driven 2+ frames
@@ -514,7 +514,7 @@ module pixel_processing(
                 // REST for B/W targets (NO_DRIVE)
                 proc_output = `NO_DRIVE;
                 // In video mode (fg_counter >= 2), complete rest before handling direction changes
-                if (!frame_skip_input && (proc_vin[3] != pixel_prev[1]) && (fg_counter < 2'd3)) begin
+                if ((proc_vin[3] != pixel_prev[1]) && (fg_counter < 2'd3)) begin
                     // Binary direction changed - restart MONO with mono target
                     proc_bo = proc_vin[3] ? (
                         {proc_bi[15:12], STAGE_MONO, fg_counter, FASTM_B2W_FRAMES[3:0], csr_mindrv, proc_vin_mono}
@@ -535,7 +535,7 @@ module pixel_processing(
                 // REVERSE drive for grey targets, then REST
                 // pixel_prev[1]: 0=drove to black, 1=drove to white
                 // Reverse: if drove black, now drive white (and vice versa)
-                if (!frame_skip_input && (proc_vin[3] != pixel_prev[1])) begin
+                if ((proc_vin[3] != pixel_prev[1])) begin
                     // Binary direction changed mid-grey - restart MONO with mono target (video mode)
                     proc_output = `NO_DRIVE;
                     proc_bo = proc_vin[3] ? (
@@ -561,7 +561,7 @@ module pixel_processing(
                 // fg_counter = video change counter (0-3)
                 // fg_frames = cooldown timer
                 // Video mode: compare mono-mapped target (DG≡B, LG≡W); normal: compare actual
-                if (!frame_skip_input && (fg_video_mode ? (proc_vin_mono != pixel_prev[1:0]) : (proc_vin[3:2] != pixel_prev[1:0]))) begin
+                if ((fg_video_mode ? (proc_vin_mono != pixel_prev[1:0]) : (proc_vin[3:2] != pixel_prev[1:0]))) begin
                     // Target changed - increment counter and start transition
                     proc_output = `NO_DRIVE;
                     // Video mode: normal frames, force mono target (skip GREY phase)
