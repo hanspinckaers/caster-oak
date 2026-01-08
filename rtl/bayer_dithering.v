@@ -582,24 +582,21 @@ module bayer_dithering #(
     // Horizontal: pix0's left is prev_pix3, pix1's left is pix0, etc.
     // Vertical: use prev1_line (1 line back), not prev2_line (2 lines back)
 
-    // 4-neighbor average for each pixel (immediate neighbors, 1 pixel/line away)
-    // pix0: left=prev_pix3, right=pix1, up=prev1_line_pix0, down≈up (proxy)
-    // For RTL, we approximate down with prev1 since we don't have next line
-    wire [9:0] neighbor_sum_0 = {2'b0, prev_pix3} + {2'b0, pix1} +
-                                 {2'b0, prev1_line_pix0} + {2'b0, prev1_line_pix0};  // up+down ≈ 2*up
-    wire [9:0] neighbor_sum_1 = {2'b0, pix0} + {2'b0, pix2} +
-                                 {2'b0, prev1_line_pix1} + {2'b0, prev1_line_pix1};
-    wire [9:0] neighbor_sum_2 = {2'b0, pix1} + {2'b0, pix3} +
-                                 {2'b0, prev1_line_pix2} + {2'b0, prev1_line_pix2};
-    // For pix3, we don't have right neighbor (next quad not yet available)
-    // Use pix2 twice for horizontal to avoid using wrong prev_pix0 (8 pixels away!)
-    wire [9:0] neighbor_sum_3 = {2'b0, pix2} + {2'b0, pix2} +
-                                 {2'b0, prev1_line_pix3} + {2'b0, prev1_line_pix3};
+    // Horizontal neighbor average for text stroke width consistency
+    // Only use left/right neighbors - vertical edges of text are what matter
+    // pix0: left=prev_pix3, right=pix1
+    // pix1: left=pix0, right=pix2
+    // pix2: left=pix1, right=pix3
+    // pix3: left=pix2, right=not available (use pix2 as proxy)
+    wire [8:0] neighbor_sum_0 = {1'b0, prev_pix3} + {1'b0, pix1};
+    wire [8:0] neighbor_sum_1 = {1'b0, pix0} + {1'b0, pix2};
+    wire [8:0] neighbor_sum_2 = {1'b0, pix1} + {1'b0, pix3};
+    wire [8:0] neighbor_sum_3 = {1'b0, pix2} + {1'b0, pix2};  // no right neighbor, use left twice
 
-    wire [7:0] neighbor_avg_0 = neighbor_sum_0[9:2];  // /4
-    wire [7:0] neighbor_avg_1 = neighbor_sum_1[9:2];
-    wire [7:0] neighbor_avg_2 = neighbor_sum_2[9:2];
-    wire [7:0] neighbor_avg_3 = neighbor_sum_3[9:2];
+    wire [7:0] neighbor_avg_0 = neighbor_sum_0[8:1];  // /2
+    wire [7:0] neighbor_avg_1 = neighbor_sum_1[8:1];
+    wire [7:0] neighbor_avg_2 = neighbor_sum_2[8:1];
+    wire [7:0] neighbor_avg_3 = neighbor_sum_3[8:1];
 
     // Difference from neighbor average (signed) - computed on PRE-degamma values
     wire signed [8:0] diff_0 = $signed({1'b0, pix0}) - $signed({1'b0, neighbor_avg_0});
