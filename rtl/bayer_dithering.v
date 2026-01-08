@@ -578,45 +578,12 @@ module bayer_dithering #(
     // Python: neighbor_avg = (up + down + left + right) / 4
     // =========================================================================
 
-    // Immediate neighbor values (1 pixel away, different CFA colors)
-    // Horizontal: pix0's left is prev_pix3, pix1's left is pix0, etc.
-    // Vertical: use prev1_line (1 line back), not prev2_line (2 lines back)
+    // =========================================================================
+    // Colored edge detection for text stroke thickening
+    // At colored text edges, apply darkening bias to compensate for CFA thinning
+    // =========================================================================
 
-    // Horizontal neighbor average for text stroke width consistency
-    // Only use left/right neighbors - vertical edges of text are what matter
-    // pix0: left=prev_pix3, right=pix1
-    // pix1: left=pix0, right=pix2
-    // pix2: left=pix1, right=pix3
-    // pix3: left=pix2, right=not available (use pix2 as proxy)
-    wire [8:0] neighbor_sum_0 = {1'b0, prev_pix3} + {1'b0, pix1};
-    wire [8:0] neighbor_sum_1 = {1'b0, pix0} + {1'b0, pix2};
-    wire [8:0] neighbor_sum_2 = {1'b0, pix1} + {1'b0, pix3};
-    wire [8:0] neighbor_sum_3 = {1'b0, pix2} + {1'b0, pix2};  // no right neighbor, use left twice
-
-    wire [7:0] neighbor_avg_0 = neighbor_sum_0[8:1];  // /2
-    wire [7:0] neighbor_avg_1 = neighbor_sum_1[8:1];
-    wire [7:0] neighbor_avg_2 = neighbor_sum_2[8:1];
-    wire [7:0] neighbor_avg_3 = neighbor_sum_3[8:1];
-
-    // Difference from neighbor average (signed) - computed on PRE-degamma values
-    wire signed [8:0] diff_0 = $signed({1'b0, pix0}) - $signed({1'b0, neighbor_avg_0});
-    wire signed [8:0] diff_1 = $signed({1'b0, pix1}) - $signed({1'b0, neighbor_avg_1});
-    wire signed [8:0] diff_2 = $signed({1'b0, pix2}) - $signed({1'b0, neighbor_avg_2});
-    wire signed [8:0] diff_3 = $signed({1'b0, pix3}) - $signed({1'b0, neighbor_avg_3});
-
-    // Scale by ~0.3 ≈ 5/16 (multiply by 5, shift right by 4)
-    // diff * 5 / 16 ≈ diff * 0.3125
-    wire signed [12:0] diff_scaled_0 = diff_0 * 5;
-    wire signed [12:0] diff_scaled_1 = diff_1 * 5;
-    wire signed [12:0] diff_scaled_2 = diff_2 * 5;
-    wire signed [12:0] diff_scaled_3 = diff_3 * 5;
-
-    wire signed [8:0] input_bias_0 = diff_scaled_0 >>> 4;
-    wire signed [8:0] input_bias_1 = diff_scaled_1 >>> 4;
-    wire signed [8:0] input_bias_2 = diff_scaled_2 >>> 4;
-    wire signed [8:0] input_bias_3 = diff_scaled_3 >>> 4;
-
-    // Only apply to colored edges - detect using per-pixel RGB saturation like Python
+    // Detect colored edges using per-pixel RGB saturation
     // Reconstruct approximate RGB at each pixel using CFA neighbors:
     // Row 0 (cfa_row=0): pix=B,W,B,W  prev1_line=G,R,G,R
     // Row 1 (cfa_row=1): pix=G,R,G,R  prev1_line=B,W,B,W
@@ -670,28 +637,20 @@ module bayer_dithering #(
                                                ((pix3_g < pix3_b) ? pix3_g : pix3_b);
     wire [7:0] pix3_sat = pix3_max - pix3_min;
 
-    // Python: saturation > 0.2 means (max-min)/(max+1) > 0.2
-    // At max=255: need diff > 51. At max=128: need diff > 26. Use ~50 as threshold.
+    // Detect colored edges: high saturation AND gradient present
+    // saturation > 50 means significant color difference in reconstructed RGB
+    // gradient > 20 means we're at an edge, not smooth colored area
     wire is_colored_edge_0 = (pix0_sat > 8'd50) && (max_grad_0 > 8'd20);
     wire is_colored_edge_1 = (pix1_sat > 8'd50) && (max_grad_1 > 8'd20);
     wire is_colored_edge_2 = (pix2_sat > 8'd50) && (max_grad_2 > 8'd20);
     wire is_colored_edge_3 = (pix3_sat > 8'd50) && (max_grad_3 > 8'd20);
 
-    // Final bias: apply input_bias only at colored edges, clamp to reasonable range
-    // Clamp to ±31 (5 bits signed) since bias can be larger now with 0.3 scale
-    wire signed [5:0] clamp_bias_0 = (input_bias_0 > 9'sd31) ? 6'sd31 :
-                                      (input_bias_0 < -9'sd32) ? -6'sd32 : input_bias_0[5:0];
-    wire signed [5:0] clamp_bias_1 = (input_bias_1 > 9'sd31) ? 6'sd31 :
-                                      (input_bias_1 < -9'sd32) ? -6'sd32 : input_bias_1[5:0];
-    wire signed [5:0] clamp_bias_2 = (input_bias_2 > 9'sd31) ? 6'sd31 :
-                                      (input_bias_2 < -9'sd32) ? -6'sd32 : input_bias_2[5:0];
-    wire signed [5:0] clamp_bias_3 = (input_bias_3 > 9'sd31) ? 6'sd31 :
-                                      (input_bias_3 < -9'sd32) ? -6'sd32 : input_bias_3[5:0];
-
-    wire signed [5:0] neighbor_bias_0 = is_colored_edge_0 ? clamp_bias_0 : 6'sd0;
-    wire signed [5:0] neighbor_bias_1 = is_colored_edge_1 ? clamp_bias_1 : 6'sd0;
-    wire signed [5:0] neighbor_bias_2 = is_colored_edge_2 ? clamp_bias_2 : 6'sd0;
-    wire signed [5:0] neighbor_bias_3 = is_colored_edge_3 ? clamp_bias_3 : 6'sd0;
+    // At colored edges, apply fixed darkening bias to thicken strokes
+    // Bias of 16 >>> 3 = 2 levels darker in 4-bit quantization space
+    wire signed [5:0] neighbor_bias_0 = is_colored_edge_0 ? 6'sd16 : 6'sd0;
+    wire signed [5:0] neighbor_bias_1 = is_colored_edge_1 ? 6'sd16 : 6'sd0;
+    wire signed [5:0] neighbor_bias_2 = is_colored_edge_2 ? 6'sd16 : 6'sd0;
+    wire signed [5:0] neighbor_bias_3 = is_colored_edge_3 ? 6'sd16 : 6'sd0;
 
     // Per-CFA threshold selection
     wire [3:0] thresh_02_1 = (cfa_row == 1'b0) ? THRESH_B_1 : THRESH_G_1;
@@ -700,11 +659,11 @@ module bayer_dithering #(
     wire [3:0] thresh_13_2 = (cfa_row == 1'b0) ? THRESH_W_2 : THRESH_R_2;
 
     // Direct bias - max 24, no clamping needed
-    // pix1_sat/pix3_sat: for W (row 0), use light gray when saturated mid-dark
+    // pix1_adj/pix3_adj: for W (row 0), use light gray when saturated mid-dark
     wire [8:0] a0_2b = {1'b0, pix0} + {1'b0, bias_2b_02};
-    wire [8:0] a1_2b = {1'b0, pix1_sat} + {1'b0, bias_2b_13};
+    wire [8:0] a1_2b = {1'b0, pix1_adj} + {1'b0, bias_2b_13};
     wire [8:0] a2_2b = {1'b0, pix2} + {1'b0, bias_2b_02};
-    wire [8:0] a3_2b = {1'b0, pix3_sat} + {1'b0, bias_2b_13};
+    wire [8:0] a3_2b = {1'b0, pix3_adj} + {1'b0, bias_2b_13};
 
     wire [3:0] c0_2b, c1_2b, c2_2b, c3_2b;
     // Use content-adaptive CFA-balanced offsets (halved for edges, full for smooth)
@@ -759,8 +718,8 @@ module bayer_dithering #(
     // Clamp to minimum 64, but only if original wasn't already dark
     wire [7:0] lum_half = luminance >> 1;
     wire [7:0] lum_for_sat = (lum_half < 8'd64 && luminance > 8'd80) ? 8'd64 : lum_half;
-    wire [7:0] pix1_sat = (is_sat_colored && cfa_row == 1'b0) ? lum_for_sat : pix1;
-    wire [7:0] pix3_sat = (is_sat_colored && cfa_row == 1'b0) ? lum_for_sat : pix3;
+    wire [7:0] pix1_adj = (is_sat_colored && cfa_row == 1'b0) ? lum_for_sat : pix1;
+    wire [7:0] pix3_adj = (is_sat_colored && cfa_row == 1'b0) ? lum_for_sat : pix3;
 
     // W_LIGHTEN: Boost dark W pixels to reduce stroke weight on W columns
     // Only applies to W subpixels (row 0, odd columns = pix1, pix3)
@@ -1053,14 +1012,11 @@ module bayer_dithering #(
     // =========================================================================
     // Apply Neighbor Bias to Dithered Values
     // Subtracting positive bias (pixel brighter than neighbors) makes harder to be bright
-    // Subtracting negative bias (pixel darker than neighbors) makes easier to be bright
-    // This normalizes stroke width for colored text
+    // At colored edges, darken output to thicken text strokes
     // =========================================================================
 
-    // The bias is in 8-bit space (diff * 0.3, range roughly ±75)
-    // c*_2b is in 4-bit space (0-15), thresholds at 4,8,12 = 64,128,192 in 8-bit
-    // To convert bias to 4-bit space: divide by 16 (>>> 4)
-    // But that loses too much precision. Instead, scale by 1/8 (>>> 3) for more effect.
+    // neighbor_bias is fixed at 16 for colored edges, 0 otherwise
+    // Scale by >>> 3 to convert to 4-bit space: 16 >>> 3 = 2 levels
     wire signed [5:0] bias_scaled_0 = neighbor_bias_0 >>> 3;
     wire signed [5:0] bias_scaled_1 = neighbor_bias_1 >>> 3;
     wire signed [5:0] bias_scaled_2 = neighbor_bias_2 >>> 3;
