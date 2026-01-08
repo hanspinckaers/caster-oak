@@ -591,7 +591,9 @@ module bayer_dithering #(
                                  {2'b0, prev1_line_pix1} + {2'b0, prev1_line_pix1};
     wire [9:0] neighbor_sum_2 = {2'b0, pix1} + {2'b0, pix3} +
                                  {2'b0, prev1_line_pix2} + {2'b0, prev1_line_pix2};
-    wire [9:0] neighbor_sum_3 = {2'b0, pix2} + {2'b0, prev_pix0} +  // right neighbor is next group's pix0, use prev
+    // For pix3, we don't have right neighbor (next quad not yet available)
+    // Use pix2 twice for horizontal to avoid using wrong prev_pix0 (8 pixels away!)
+    wire [9:0] neighbor_sum_3 = {2'b0, pix2} + {2'b0, pix2} +
                                  {2'b0, prev1_line_pix3} + {2'b0, prev1_line_pix3};
 
     wire [7:0] neighbor_avg_0 = neighbor_sum_0[9:2];  // /4
