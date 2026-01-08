@@ -288,8 +288,10 @@ module caster(
     reg doping_pulse;
     localparam DOPING_INTERVAL = 8'd125;
 
-    // Frame skip for halving input rate (haze testing)
-    reg frame_skip_input;
+    // Frame skip for reducing grey input rate (haze testing)
+    // 3-bit counter: skip when != 0 (7 out of 8 frames)
+    reg [2:0] frame_skip_cnt;
+    wire frame_skip_input = (frame_skip_cnt != 3'd0);
 
     always @(posedge clk) begin
         case (scan_state)
@@ -333,8 +335,8 @@ module caster(
                     doping_counter <= doping_counter - 8'd1;
                     doping_pulse <= 1'b0;
                 end
-                // Toggle frame skip for halving input rate
-                frame_skip_input <= ~frame_skip_input;
+                // Cycle frame skip counter: 0→7→0 (skip 7 of 8 for grey/interrupted)
+                frame_skip_cnt <= frame_skip_cnt + 3'd1;
             end
             else begin
                 scan_h_cnt <= scan_h_cnt + 1;
@@ -374,7 +376,7 @@ module caster(
             al_framecnt <= 0;
             doping_counter <= DOPING_INTERVAL;
             doping_pulse <= 1'b0;
-            frame_skip_input <= 1'b0;
+            frame_skip_cnt <= 3'd0;
         end
     end
 
