@@ -319,10 +319,10 @@ module pixel_processing(
                                                  4'd3;   // DG: 3 frames
         2'b01: // White - no filter, brightest
             fg_grey_frames_cfa = pixel_prev[1] ? 4'd3 :  // LG: 3 frames (more darkening needed)
-                                                 4'd2;   // DG: 2 frames
+                                                 4'd1;   // DG: 1 frame (darker)
         2'b10: // Green - medium, eye sensitive
             fg_grey_frames_cfa = pixel_prev[1] ? 4'd3 :  // LG: 3 frames (appears bright to eye)
-                                                 4'd2;   // DG: 2 frames (eye sensitive, less reversal)
+                                                 4'd1;   // DG: 1 frame (darker)
         2'b11: // Red - darker filter
             fg_grey_frames_cfa = pixel_prev[1] ? 4'd2 :  // LG: 2 frames
                                                  4'd3;   // DG: 3 frames
