@@ -1004,11 +1004,11 @@ module bayer_dithering #(
     // Allows full 0-15 range for sharpness
     // =========================================================================
 
-    // Fixed darkening: -1 level at colored edges, 0 otherwise
-    wire signed [4:0] darken_0 = is_colored_edge_0 ? -5'sd1 : 5'sd0;
-    wire signed [4:0] darken_1 = is_colored_edge_1 ? -5'sd1 : 5'sd0;
-    wire signed [4:0] darken_2 = is_colored_edge_2 ? -5'sd1 : 5'sd0;
-    wire signed [4:0] darken_3 = is_colored_edge_3 ? -5'sd1 : 5'sd0;
+    // Fixed darkening: disabled (was -1 level at colored edges)
+    wire signed [4:0] darken_0 = 5'sd0;
+    wire signed [4:0] darken_1 = 5'sd0;
+    wire signed [4:0] darken_2 = 5'sd0;
+    wire signed [4:0] darken_3 = 5'sd0;
 
     // Apply darkening
     wire signed [5:0] c0_biased_raw = $signed({2'b00, c0_2b}) + darken_0;
