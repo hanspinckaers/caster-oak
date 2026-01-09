@@ -897,6 +897,9 @@ module caster(
 
     wire [7:0] pixel_comb;
     wire [63:0] bo_pixel_comb;
+    // CFA row from vertical counter (0=BW row, 1=GR row)
+    wire s4_cfa_row = s4_v_cnt[0];
+
     generate
         for (i = 0; i < 4; i = i + 1) begin: gen_pix_proc
             wire [3:0] proc_p_or = s4_vin_pixel[i*4+:4];
@@ -909,6 +912,12 @@ module caster(
             wire [15:0] proc_bo;
             wire [1:0] proc_lut_rd = s4_lut_rd[i*2+:2];
             wire [1:0] proc_output;
+            // CFA color detection: 00=Blue, 01=White, 10=Green, 11=Red
+            // Row 0 (BW): i=0,2 are B, i=1,3 are W
+            // Row 1 (GR): i=0,2 are G, i=1,3 are R
+            wire [1:0] cfa_color = (s4_cfa_row == 1'b0) ?
+                (((i == 0) || (i == 2)) ? 2'b00 : 2'b01) :  // Row 0: B or W
+                (((i == 0) || (i == 2)) ? 2'b10 : 2'b11);   // Row 1: G or R
 
             pixel_processing pixel_processing(
                 .csr_lutframe(csr_lut_frame),
@@ -931,7 +940,8 @@ module caster(
                 .al_framecnt(al_framecnt),
                 .neighbor_video(neighbor_video[i]),
                 .doping_pulse(doping_pulse),
-                .frame_skip_input(frame_skip_input)
+                .frame_skip_input(frame_skip_input),
+                .cfa_color(cfa_color)
             );
 
             // Output

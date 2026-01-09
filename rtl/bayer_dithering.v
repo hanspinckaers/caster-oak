@@ -545,25 +545,24 @@ module bayer_dithering #(
     adder_sat adder_sat3 (a3[8:4], b3, c3);
 
     // 2-bit path: per-CFA brightness bias for FAST_GREY
-    // Tuned for neutral gray rendering with GRBW phase order
-    // Reduced warm-green bias (~60% of original) - no clamping needed
-    localparam [7:0] BIAS_2B = 8'd9;       // Base brightness boost (was 15)
+    // Luminance now balanced via per-CFA reversal frames in pixel_processing.v
+    localparam [7:0] BIAS_2B = 8'd9;       // Base brightness boost
     localparam [7:0] BIAS_2B_B = 8'd2;     // Blue: minimal
-    localparam [7:0] BIAS_2B_W = 8'd9;     // White: baseline
-    localparam [7:0] BIAS_2B_G = 8'd24;    // Green: 9 + 15 = 24
-    localparam [7:0] BIAS_2B_R = 8'd16;    // Red: 9 + 7 = 16
+    localparam [7:0] BIAS_2B_W = 8'd2;     // White: reduced (was 9, now balanced via reversal)
+    localparam [7:0] BIAS_2B_G = 8'd24;    // Green: high (eye sensitive)
+    localparam [7:0] BIAS_2B_R = 8'd16;    // Red: medium
 
     // Per-CFA quantization thresholds (in 4-bit space: 0-15)
-    // Default thresholds: 4 (0→1), 8 (1→2), 12 (2→3)
-    // Lower threshold = easier to reach that level = brighter
-    localparam [3:0] THRESH_B_1 = 4'd3;    // Blue 0→1 (brighter)
-    localparam [3:0] THRESH_B_2 = 4'd7;    // Blue 1→2 (brighter)
-    localparam [3:0] THRESH_W_1 = 4'd5;    // White 0→1 (slightly darker)
-    localparam [3:0] THRESH_W_2 = 4'd8;    // White 1→2
-    localparam [3:0] THRESH_G_1 = 4'd4;    // Green 0→1
-    localparam [3:0] THRESH_G_2 = 4'd8;    // Green 1→2
-    localparam [3:0] THRESH_R_1 = 4'd3;    // Red 0→1 (brighter)
-    localparam [3:0] THRESH_R_2 = 4'd7;    // Red 1→2 (brighter)
+    // Disabled per-CFA variation - using uniform thresholds
+    // Luminance balanced via reversal frames instead
+    localparam [3:0] THRESH_B_1 = 4'd4;    // Blue 0→1 (uniform)
+    localparam [3:0] THRESH_B_2 = 4'd8;    // Blue 1→2 (uniform)
+    localparam [3:0] THRESH_W_1 = 4'd4;    // White 0→1 (uniform)
+    localparam [3:0] THRESH_W_2 = 4'd8;    // White 1→2 (uniform)
+    localparam [3:0] THRESH_G_1 = 4'd4;    // Green 0→1 (uniform)
+    localparam [3:0] THRESH_G_2 = 4'd8;    // Green 1→2 (uniform)
+    localparam [3:0] THRESH_R_1 = 4'd4;    // Red 0→1 (uniform)
+    localparam [3:0] THRESH_R_2 = 4'd8;    // Red 1→2 (uniform)
 
     // Per-CFA bias selection
     // Row 0 (cfa_row=0): pix0,pix2=B, pix1,pix3=W
@@ -1005,11 +1004,11 @@ module bayer_dithering #(
     // Allows full 0-15 range for sharpness
     // =========================================================================
 
-    // Fixed darkening: -3 levels at colored edges, 0 otherwise
-    wire signed [4:0] darken_0 = is_colored_edge_0 ? -5'sd3 : 5'sd0;
-    wire signed [4:0] darken_1 = is_colored_edge_1 ? -5'sd3 : 5'sd0;
-    wire signed [4:0] darken_2 = is_colored_edge_2 ? -5'sd3 : 5'sd0;
-    wire signed [4:0] darken_3 = is_colored_edge_3 ? -5'sd3 : 5'sd0;
+    // Fixed darkening: -1 level at colored edges, 0 otherwise
+    wire signed [4:0] darken_0 = is_colored_edge_0 ? -5'sd1 : 5'sd0;
+    wire signed [4:0] darken_1 = is_colored_edge_1 ? -5'sd1 : 5'sd0;
+    wire signed [4:0] darken_2 = is_colored_edge_2 ? -5'sd1 : 5'sd0;
+    wire signed [4:0] darken_3 = is_colored_edge_3 ? -5'sd1 : 5'sd0;
 
     // Apply darkening
     wire signed [5:0] c0_biased_raw = $signed({2'b00, c0_2b}) + darken_0;

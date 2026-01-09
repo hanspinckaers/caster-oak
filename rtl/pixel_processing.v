@@ -34,7 +34,8 @@ module pixel_processing(
     input  wire [5:0]  al_framecnt, // Auto LUT mode frame counter
     input  wire        neighbor_video, // Neighbor pixel is in video mode (FAST_GREY)
     input  wire        doping_pulse,   // Global doping pulse (1 frame every ~5 sec)
-    input  wire        frame_skip_input // Ignore new input this frame (halve input rate)
+    input  wire        frame_skip_input, // Ignore new input this frame (halve input rate)
+    input  wire [1:0]  cfa_color       // CFA color: 00=Blue, 01=White, 10=Green, 11=Red
 );
 
     // Pixel state: 16bits
@@ -305,6 +306,28 @@ module pixel_processing(
     wire fg_is_grey_source = (pixel_prev[1:0] == 2'b01) || (pixel_prev[1:0] == 2'b10);
     // Grey involved: either source or target is grey (these cause haze on interruption)
     wire fg_grey_involved = fg_is_grey_target || fg_is_grey_source;
+    // CFA-adjusted reversal frames for grey targets
+    // Per-CFA color tuning for LG and DG reversal frames
+    // cfa_color: 00=Blue, 01=White, 10=Green, 11=Red
+    // pixel_prev[1]: 1=drove white (LG), 0=drove black (DG)
+    // Base frames: FASTG_W2G_FRAMES=2 (LG), FASTG_B2G_FRAMES=2 (DG)
+    reg [3:0] fg_grey_frames_cfa;
+    always @(*) begin
+        case (cfa_color)
+        2'b00: // Blue - darkest filter, needs brighter e-ink to compensate
+            fg_grey_frames_cfa = pixel_prev[1] ? 4'd1 :  // LG: 1 frame (minimal darkening)
+                                                 4'd3;   // DG: 3 frames
+        2'b01: // White - no filter, brightest
+            fg_grey_frames_cfa = pixel_prev[1] ? 4'd3 :  // LG: 3 frames (more darkening needed)
+                                                 4'd2;   // DG: 2 frames
+        2'b10: // Green - medium, eye sensitive
+            fg_grey_frames_cfa = pixel_prev[1] ? 4'd3 :  // LG: 3 frames (appears bright to eye)
+                                                 4'd2;   // DG: 2 frames (eye sensitive, less reversal)
+        2'b11: // Red - darker filter
+            fg_grey_frames_cfa = pixel_prev[1] ? 4'd2 :  // LG: 2 frames
+                                                 4'd3;   // DG: 3 frames
+        endcase
+    end
     // MONO frames: 6 for all targets (reduced from 7)
     wire [3:0] fg_mono_frames_2w = 4'd6;
     wire [3:0] fg_mono_frames_2b = 4'd6;
@@ -501,7 +524,7 @@ module pixel_processing(
                         proc_bo = {proc_bi[15:12], STAGE_HOLD, fg_counter, FASTG_BW_REST_FRAMES[3:0], 2'b00, proc_bi[1:0]};
                     else if (fg_is_grey_target)
                         // Normal grey target: go to GREY for reverse drive
-                        proc_bo = {proc_bi[15:12], STAGE_GREY, fg_counter, FASTG_B2G_FRAMES[3:0] + FASTG_SETTLE_FRAMES[3:0], 2'b00, proc_vin[3:2]};
+                        proc_bo = {proc_bi[15:12], STAGE_GREY, fg_counter, fg_grey_frames_cfa + FASTG_SETTLE_FRAMES[3:0], 2'b00, proc_vin[3:2]};
                     else
                         // B/W target: go to HOLD for rest
                         proc_bo = {proc_bi[15:12], STAGE_HOLD, fg_counter, FASTG_BW_REST_FRAMES[3:0], 2'b00, proc_bi[1:0]};
@@ -573,7 +596,7 @@ module pixel_processing(
                     // Same-side grey transition (W→LG or B→DG): skip MONO
                     // No counter increment (not an interruption)
                     else if (fg_is_grey_target && (proc_vin[3] == pixel_prev[1])) begin
-                        proc_bo = {proc_bi[15:12], STAGE_GREY, fg_counter, FASTG_B2G_FRAMES[3:0] + FASTG_SETTLE_FRAMES[3:0], 2'b00, proc_vin[3:2]};
+                        proc_bo = {proc_bi[15:12], STAGE_GREY, fg_counter, fg_grey_frames_cfa + FASTG_SETTLE_FRAMES[3:0], 2'b00, proc_vin[3:2]};
                     end
                     else begin
                         // Different side or B/W target: need MONO
