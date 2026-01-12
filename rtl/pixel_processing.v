@@ -314,22 +314,22 @@ module pixel_processing(
     reg [3:0] fg_grey_frames_cfa;
     always @(*) begin
         case (cfa_color)
-        2'b00: // Blue - darkest filter
-            fg_grey_frames_cfa = pixel_prev[1] ? 4'd1 :  // LG: 1 frame
-                                                 4'd2;   // DG: 2 frames
+        2'b00: // Blue - darkest filter, needs brighter e-ink to compensate
+            fg_grey_frames_cfa = pixel_prev[1] ? 4'd1 :  // LG: 1 frame (minimal darkening)
+                                                 4'd3;   // DG: 3 frames
         2'b01: // White - no filter, brightest
-            fg_grey_frames_cfa = pixel_prev[1] ? 4'd3 :  // LG: 3 frames
-                                                 4'd2;   // DG: 2 frames
+            fg_grey_frames_cfa = pixel_prev[1] ? 4'd3 :  // LG: 3 frames (more darkening needed)
+                                                 4'd1;   // DG: 1 frame (darker)
         2'b10: // Green - medium, eye sensitive
-            fg_grey_frames_cfa = pixel_prev[1] ? 4'd3 :  // LG: 3 frames
-                                                 4'd2;   // DG: 2 frames
+            fg_grey_frames_cfa = pixel_prev[1] ? 4'd3 :  // LG: 3 frames (appears bright to eye)
+                                                 4'd1;   // DG: 1 frame (darker)
         2'b11: // Red - darker filter
             fg_grey_frames_cfa = pixel_prev[1] ? 4'd2 :  // LG: 2 frames
-                                                 4'd2;   // DG: 2 frames
+                                                 4'd3;   // DG: 3 frames
         endcase
     end
-    // MONO frames: asymmetric like FAST_MONO (7 B→W, 6 W→B)
-    wire [3:0] fg_mono_frames_2w = 4'd7;
+    // MONO frames: 6 for all targets (reduced from 7)
+    wire [3:0] fg_mono_frames_2w = 4'd6;
     wire [3:0] fg_mono_frames_2b = 4'd6;
     // Round target to mono (B=00 or W=11) based on MSB - for video/rapid changes
     wire [1:0] proc_vin_mono = {proc_vin[3], proc_vin[3]};
