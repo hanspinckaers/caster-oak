@@ -683,8 +683,8 @@ module caster(
     ) bayer_dithering (
         .clk(clk),
         .rst(rst),
-        .vin(s2_pixel_linear),         // 1.5 gamma for 2-bit FAST_GREY (brighter midtones)
-        .vin_1b(s2_pixel_linear_22),   // 2.2 gamma for 1-bit FAST_MONO
+        .vin(s2_pixel_linear_fg),      // FAST_GREY degamma for 2-bit path
+        .vin_1b(s2_pixel_linear_fg),   // Same degamma for 1-bit FAST_MONO
         .is_colored_in(s2_is_colored), // True RGB saturation flags from vin_colormixer
         .vout_1b(s3_pixel_bayer_1b),   // 1-bit for FAST_MONO (3x3 Bayer)
         .vout_2b(s3_pixel_bayer_2b),   // 2-bit for FAST_GREY (4x4 CFA-balanced)

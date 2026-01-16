@@ -54,6 +54,11 @@ module pixel_processing(
     localparam FASTM_B2W_FRAMES = 6'd7;      // MONO duration for all pixels
     localparam FASTM_W2B_FRAMES = 6'd6;
 
+    // FAST_MONO doping marker: [11:10] = 10 means in doping sequence
+    localparam [1:0] FASTM_DOPING_MARKER = 2'b10;
+    // FAST_MONO cooldown after transition before doping eligibility (same as FAST_GREY)
+    localparam [3:0] FASTM_DOPING_COOLDOWN = 4'd8;
+
     // Video mode: full drive frames, but skip reverse/grey stage
     localparam FASTV_B2W_FRAMES = 4'd7;     // Video mode: same as normal B→W
     localparam FASTV_W2B_FRAMES = 4'd6;     // Video mode: same as normal W→B
@@ -275,6 +280,13 @@ module pixel_processing(
     wire [1:0] drive_towards_input = proc_vin[3] ? `DRIVE_WHITE: `DRIVE_BLACK;
     wire [1:0] drive_against_input = proc_vin[3] ? `DRIVE_BLACK: `DRIVE_WHITE;
 
+    // FAST_MONO doping state decode
+    wire fm_doping_mode = (proc_bi[11:10] == FASTM_DOPING_MARKER);
+    wire fm_cooldown_mode = (proc_bi[11:10] == 2'b01);
+    wire [3:0] fm_cooldown = pixel_framecnt[3:0];
+    wire [1:0] fm_dc_bias = pixel_mindrv;  // Reuse as dc_bias when idle
+    wire fm_doping_done = pixel_prev[1];   // bit 1 = doping phase (0=needs, 1=done)
+
     // =========================================================================
     // FAST_GREY State Machine Documentation
     // =========================================================================
@@ -340,10 +352,9 @@ module pixel_processing(
     wire [1:0] fg_counter_dec = (fg_counter == 2'd0) ? 2'd0 : (fg_counter - 2'd1);
     wire [3:0] fg_frames_dec = fg_frames - 4'd1;
     // Mid-transition direction change: extra frames for both directions
-    // White: +1 at 2 frames driven (short interruption compensation)
-    // Black: +1 always (needs more frames to avoid ghosting)
+    // Both white and black: +1 always (needs more frames to avoid ghosting)
     wire [3:0] fg_frames_driven = (fg_frames >= 4'd6) ? 4'd0 : (4'd6 - fg_frames);
-    wire [3:0] fg_frames_2w = (fg_frames_driven == 4'd2) ? 4'd3 : fg_frames_driven;
+    wire [3:0] fg_frames_2w = fg_frames_driven + 4'd1;
     wire [3:0] fg_frames_2b = fg_frames_driven + 4'd1;
     // Video mode: DISABLED for testing reversal formula
     // wire fg_video_mode = (pixel_stage == STAGE_DONE) && (fg_counter >= 2'd3);
@@ -455,37 +466,116 @@ module pixel_processing(
             end
         end
         BASEMODE_FAST_MONO: begin
-            if (pixel_framecnt != 0) begin
-                // Dynamic frame rate cap:
-                // Once the pixel state is changed, the DYFRC field is reset to
-                // the CSR val.
-                // The field value is then decremented every frame until 0
-                // Change to a new color is only allowed if the field is 0
-                // Currently updating
+            // FAST_MONO with per-pixel doping (same as FAST_GREY)
+            // State encoding:
+            //   [11:10] = 00: Normal (transitioning if framecnt>0, fully idle if framecnt==0)
+            //   [11:10] = 01: Cooldown after transition (framecnt[3:0] = cooldown timer)
+            //   [11:10] = 10: In doping sequence (framecnt[3:0] = doping countdown)
+            //   [9:4] = frame counter or timer
+            //   [3:2] = mindrv (transition) or doping phase: 00=needs, 01=in progress, 10=done
+            //   [1:0] = {reserved, prev_pixel}
+
+            if (pixel_framecnt != 0 && !fm_doping_mode && !fm_cooldown_mode) begin
+                // Currently transitioning
                 if ((proc_vin[3] != pixel_prev[0]) && (pixel_mindrv == 2'd0)) begin
-                    // Pixel state changed
+                    // Pixel state changed mid-transition
                     proc_output = drive_towards_input;
                     proc_bo = proc_vin[3] ? (
-                        {proc_bi[15:10], pixel_framecnt_2w, csr_mindrv, 2'd1}
-                    ) : {proc_bi[15:10], pixel_framecnt_2b, csr_mindrv, 2'd0};
+                        {proc_bi[15:12], 2'b00, pixel_framecnt_2w, csr_mindrv, 2'd1}
+                    ) : {proc_bi[15:12], 2'b00, pixel_framecnt_2b, csr_mindrv, 2'd0};
+                end
+                else if (pixel_framecnt == 6'd1) begin
+                    // Last frame of transition - enter cooldown, reset doping phase
+                    proc_output = pixel_prev[0] ? `DRIVE_WHITE : `DRIVE_BLACK;
+                    proc_bo = {proc_bi[15:12], 2'b01, 2'b00, FASTM_DOPING_COOLDOWN, 2'b00, proc_bi[1:0]};
                 end
                 else begin
-                    // Pixel state not changed
+                    // Continue driving
                     proc_output = pixel_prev[0] ? `DRIVE_WHITE : `DRIVE_BLACK;
-                    proc_bo = {proc_bi[15:10], pixel_framecnt_dec, pixel_mindrv_dec, proc_bi[1:0]};
+                    proc_bo = {proc_bi[15:12], 2'b00, pixel_framecnt_dec, pixel_mindrv_dec, proc_bi[1:0]};
+                end
+            end
+            else if (fm_cooldown_mode) begin
+                // In cooldown after transition
+                if (proc_vin[3] != pixel_prev[0]) begin
+                    // Pixel state changed during cooldown - start new transition
+                    proc_output = drive_towards_input;
+                    proc_bo = proc_vin[3] ? (
+                        {proc_bi[15:12], 2'b00, FASTM_B2W_FRAMES, csr_mindrv, 2'b01}
+                    ) : {proc_bi[15:12], 2'b00, FASTM_W2B_FRAMES, csr_mindrv, 2'b00};
+                end
+                else if (fm_cooldown > 4'd1) begin
+                    // Cooldown countdown
+                    proc_output = `NO_DRIVE;
+                    proc_bo = {proc_bi[15:12], 2'b01, 2'b00, fm_cooldown - 4'd1, proc_bi[3:0]};
+                end
+                else begin
+                    // Cooldown done - become fully idle
+                    proc_output = `NO_DRIVE;
+                    proc_bo = {proc_bi[15:12], 2'b00, 6'd0, proc_bi[3:0]};
+                end
+            end
+            else if (fm_doping_mode) begin
+                // In per-pixel doping sequence
+                if (proc_vin[3] != pixel_prev[0]) begin
+                    // Pixel state changed during doping - start new transition
+                    proc_output = drive_towards_input;
+                    proc_bo = proc_vin[3] ? (
+                        {proc_bi[15:12], 2'b00, FASTM_B2W_FRAMES, csr_mindrv, 2'b01}
+                    ) : {proc_bi[15:12], 2'b00, FASTM_W2B_FRAMES, csr_mindrv, 2'b00};
+                end
+                else if (fm_cooldown > 4'd1) begin
+                    // Doping countdown - drive pixel
+                    proc_output = pixel_prev[0] ? `DRIVE_WHITE : `DRIVE_BLACK;
+                    proc_bo = {proc_bi[15:12], 2'b10, 2'b00, fm_cooldown - 4'd1, proc_bi[3:0]};
+                end
+                else if (fm_cooldown == 4'd1) begin
+                    // Final frame of doping - drive and advance phase
+                    proc_output = pixel_prev[0] ? `DRIVE_WHITE : `DRIVE_BLACK;
+                    if (pixel_mindrv == 2'b00)
+                        // First phase done -> second phase (wait 8 frames then dope again)
+                        proc_bo = {proc_bi[15:12], 2'b10, 2'b00, 4'd8, 2'b01, proc_bi[1:0]};
+                    else
+                        // Second phase done -> mark done, go idle
+                        proc_bo = {proc_bi[15:12], 2'b00, 6'd0, 2'b10, proc_bi[1:0]};
+                end
+                else begin
+                    // fm_cooldown == 0: between doping phases, start second phase
+                    proc_output = `NO_DRIVE;
+                    if (pixel_mindrv == 2'b01)
+                        // Start second doping phase
+                        proc_bo = pixel_prev[0] ?
+                            {proc_bi[15:12], 2'b10, 2'b00, 4'd2, 2'b01, proc_bi[1:0]} :
+                            {proc_bi[15:12], 2'b10, 2'b00, 4'd4, 2'b01, proc_bi[1:0]};
+                    else
+                        // Already done, go idle
+                        proc_bo = {proc_bi[15:12], 2'b00, 6'd0, 2'b10, proc_bi[1:0]};
                 end
             end
             else begin
-                // Not currently updating
+                // Fully idle (framecnt == 0, not in cooldown or doping)
                 if (proc_vin[3] != pixel_prev[0]) begin
-                    // Pixel state changed
+                    // Pixel state changed - start transition, reset doping phase
                     proc_output = drive_towards_input;
                     proc_bo = proc_vin[3] ? (
-                        {proc_bi[15:10], FASTM_B2W_FRAMES, csr_mindrv, 2'd1}
-                    ) : {proc_bi[15:10], FASTM_W2B_FRAMES, csr_mindrv, 2'd0};
+                        {proc_bi[15:12], 2'b00, FASTM_B2W_FRAMES, csr_mindrv, 2'b01}
+                    ) : {proc_bi[15:12], 2'b00, FASTM_W2B_FRAMES, csr_mindrv, 2'b00};
+                end
+                else if (doping_pulse) begin
+                    // Global pulse: 1-frame drive for all idle pixels
+                    proc_output = pixel_prev[0] ? `DRIVE_WHITE : `DRIVE_BLACK;
+                    proc_bo = proc_bi;
+                end
+                else if (pixel_mindrv == 2'b00) begin
+                    // Needs doping (phase=00): start per-pixel sequence
+                    // Black gets 4 frames, White gets 2 frames
+                    proc_output = `NO_DRIVE;
+                    proc_bo = pixel_prev[0] ?
+                        {proc_bi[15:12], 2'b10, 2'b00, 4'd2, 2'b00, proc_bi[1:0]} :
+                        {proc_bi[15:12], 2'b10, 2'b00, 4'd4, 2'b00, proc_bi[1:0]};
                 end
                 else begin
-                    // Pixel state not changed
+                    // Already doped (phase=10) or in progress - stay idle
                     proc_output = `NO_DRIVE;
                     proc_bo = proc_bi;
                 end

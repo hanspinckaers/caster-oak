@@ -38,12 +38,19 @@ module bayer_dithering #(
     // CFA threshold bias - for equal perceived thickness (1-bit path only)
     // W=high (stays black more, counters brightness)
     // B/G/R=low (turns white more, counters dimness)
+    // DEPRECATED: Use per-CFA brightness bias (BIAS_1B_*) with CFA-balanced matrix instead
     parameter CFA_BIAS_B = 20,        // Blue - easy to turn ON
     parameter CFA_BIAS_W = 50,        // White - hard to turn ON
     parameter CFA_BIAS_G = 20,        // Green - easy to turn ON
     parameter CFA_BIAS_R = 20,        // Red - easy to turn ON
     parameter FATTEN = 0,             // Lower threshold globally (fatter text, 0-20)
-    parameter W_DARKEN = 4'd0         // Darken W subpixels in 2-bit simple path
+    parameter W_DARKEN = 4'd0,        // Darken W subpixels in 2-bit simple path
+    // Per-CFA brightness bias for 1-bit path (similar to FAST_GREY's BIAS_2B_*)
+    // These compensate for CFA filter transmission differences
+    parameter BIAS_1B_B = 8'd4,       // Blue: minimal boost (darkest filter)
+    parameter BIAS_1B_W = 8'd4,       // White: minimal (CFA-balanced matrix handles it)
+    parameter BIAS_1B_G = 8'd16,      // Green: high boost (eye sensitive, appears bright)
+    parameter BIAS_1B_R = 8'd12       // Red: medium boost
 ) (
     input wire                       clk,
     input wire                       rst,
@@ -532,17 +539,31 @@ module bayer_dithering #(
     wire [8:0] bias_02 = (BIAS + FATTEN > {1'b0, cfa_bias_02}) ? (BIAS + FATTEN - {1'b0, cfa_bias_02}) : 9'd0;
     wire [8:0] bias_13 = (BIAS + FATTEN > {1'b0, cfa_bias_13}) ? (BIAS + FATTEN - {1'b0, cfa_bias_13}) : 9'd0;
 
-    // 1-bit path: uses CFA bias (for FAST_MONO) - uses pix_1b (2.2 degamma)
-    wire [8:0] a0 = {1'b0, pix0_1b} + bias_02;
-    wire [8:0] a1 = {1'b0, pix1_1b} + bias_13;
-    wire [8:0] a2 = {1'b0, pix2_1b} + bias_02;
-    wire [8:0] a3 = {1'b0, pix3_1b} + bias_13;
+    // 1-bit path: per-CFA brightness bias (for FAST_MONO) - uses pix_1b (2.2 degamma)
+    // Per-CFA bias selection (same pattern as 2-bit path)
+    // Row 0 (cfa_row=0): pix0,pix2=B, pix1,pix3=W
+    // Row 1 (cfa_row=1): pix0,pix2=G, pix1,pix3=R
+    wire [7:0] bias_1b_02 = (cfa_row == 1'b0) ? BIAS_1B_B : BIAS_1B_G;
+    wire [7:0] bias_1b_13 = (cfa_row == 1'b0) ? BIAS_1B_W : BIAS_1B_R;
+
+    wire [8:0] a0 = {1'b0, pix0_1b} + {1'b0, bias_1b_02};
+    wire [8:0] a1 = {1'b0, pix1_1b} + {1'b0, bias_1b_13};
+    wire [8:0] a2 = {1'b0, pix2_1b} + {1'b0, bias_1b_02};
+    wire [8:0] a3 = {1'b0, pix3_1b} + {1'b0, bias_1b_13};
+
+    // Content-adaptive 8x8 CFA-balanced offsets for 1-bit path
+    // At edges (high gradient): no dither for sharp text
+    // At smooth areas: full offsets for better gradients (no halving for 1-bit)
+    wire [3:0] b0_1b_adaptive = no_dither_0 ? 4'sd0 : b0_cfa;
+    wire [3:0] b1_1b_adaptive = no_dither_1 ? 4'sd0 : b1_cfa;
+    wire [3:0] b2_1b_adaptive = no_dither_2 ? 4'sd0 : b2_cfa;
+    wire [3:0] b3_1b_adaptive = no_dither_3 ? 4'sd0 : b3_cfa;
 
     wire [3:0] c0, c1, c2, c3;
-    adder_sat adder_sat0 (a0[8:4], b0, c0);
-    adder_sat adder_sat1 (a1[8:4], b1, c1);
-    adder_sat adder_sat2 (a2[8:4], b2, c2);
-    adder_sat adder_sat3 (a3[8:4], b3, c3);
+    adder_sat adder_sat0 (a0[8:4], b0_1b_adaptive, c0);
+    adder_sat adder_sat1 (a1[8:4], b1_1b_adaptive, c1);
+    adder_sat adder_sat2 (a2[8:4], b2_1b_adaptive, c2);
+    adder_sat adder_sat3 (a3[8:4], b3_1b_adaptive, c3);
 
     // 2-bit path: per-CFA brightness bias for FAST_GREY
     // Luminance now balanced via per-CFA reversal frames in pixel_processing.v
