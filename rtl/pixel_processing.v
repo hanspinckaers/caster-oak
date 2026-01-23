@@ -316,26 +316,22 @@ module pixel_processing(
         (phys_target == 2'b10) ? `POS_LIGHT_GREY :
         `POS_WHITE;
 
-    // Position-dependent step sizes via LUT (indexed by current position)
-    // Toward white: fast at black, gentle through middle, very slow near white
+    // Toward white LUT
     reg [2:0] phys_pos_change_w;
     always @(*) begin
         case (phys_position)
-        5'd0, 5'd1, 5'd2, 5'd3, 5'd4: phys_pos_change_w = 3'd4;
-        5'd5, 5'd6, 5'd7, 5'd8, 5'd9, 5'd10, 5'd11, 5'd12: phys_pos_change_w = 3'd2;
-        5'd13, 5'd14, 5'd15, 5'd16: phys_pos_change_w = 3'd1;
+        5'd0, 5'd1: phys_pos_change_w = 3'd3;
+        5'd2, 5'd3, 5'd4, 5'd5, 5'd6, 5'd7, 5'd8, 5'd9, 5'd10, 5'd11, 5'd12, 5'd13, 5'd14, 5'd15, 5'd16: phys_pos_change_w = 3'd2;
         default: phys_pos_change_w = 3'd2;
         endcase
     end
 
-    // Toward black: slow near black, accelerating toward white
+    // Toward black LUT
     reg [2:0] phys_pos_change_b;
     always @(*) begin
         case (phys_position)
-        5'd0, 5'd1, 5'd2, 5'd3: phys_pos_change_b = 3'd1;
-        5'd4, 5'd5, 5'd6, 5'd7, 5'd8, 5'd9, 5'd10, 5'd11: phys_pos_change_b = 3'd2;
-        5'd12, 5'd13: phys_pos_change_b = 3'd4;
-        5'd14, 5'd15, 5'd16: phys_pos_change_b = 3'd5;
+        5'd0, 5'd1, 5'd2, 5'd3, 5'd4, 5'd5, 5'd6, 5'd7, 5'd8, 5'd9, 5'd10, 5'd11, 5'd12, 5'd13, 5'd14: phys_pos_change_b = 3'd2;
+        5'd15, 5'd16: phys_pos_change_b = 3'd3;
         default: phys_pos_change_b = 3'd3;
         endcase
     end
