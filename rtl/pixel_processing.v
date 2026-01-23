@@ -586,7 +586,7 @@ module pixel_processing(
         BASEMODE_FAST_GREY: begin
             // Physics-based position tracking with LUT-based asymmetric steps
             // State: [11:7]=position (0-16), [1:0]=target (B/DG/LG/W)
-            // Simple: just drive toward target, no doping
+            // Global pulse: 1-frame drive at extreme positions
 
             if (phys_need_drive) begin
                 // Driving toward target - update position
@@ -600,9 +600,17 @@ module pixel_processing(
                 end
             end
             else begin
-                // At target - idle, no doping
-                proc_output = `NO_DRIVE;
-                proc_bo = {proc_bi[15:12], phys_position, proc_bi[6:2], phys_target};
+                // At target - idle
+                if (doping_pulse && phys_at_extreme) begin
+                    // Global pulse: 1-frame drive for black and white
+                    proc_output = phys_at_white ? `DRIVE_WHITE : `DRIVE_BLACK;
+                    proc_bo = proc_bi;
+                end
+                else begin
+                    // Stay idle
+                    proc_output = `NO_DRIVE;
+                    proc_bo = {proc_bi[15:12], phys_position, proc_bi[6:2], phys_target};
+                end
             end
         end
         endcase
