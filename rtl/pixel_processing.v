@@ -294,19 +294,23 @@ module pixel_processing(
     // PIXEL STATE WORD (proc_bo/proc_bi) bit layout:
     //   [15:12] - Mode (4 bits)
     //   [11:7]  - Position (5 bits, 0-16)
-    //   [6]     - Reserved
-    //   [5:4]   - Reserved
+    //   [6]     - Pulse done (1 = already pulsed since reaching target)
+    //   [5:4]   - Rest counter (0-3 frames idle at target before pulse)
     //   [3:2]   - Reserved
     //   [1:0]   - Target (2 bits: B=00, DG=01, LG=10, W=11)
     //
     // Position scale: 0=black, 5=dark grey, 11=light grey, 16=white
     // Drive uses position-dependent LUTs for asymmetric e-ink physics
+    // Per-pixel pulse: after 3 frames at extreme (B/W), pulse once
     //
     // =========================================================================
 
     // FAST_GREY physics-based state decode
     wire [4:0] phys_position = proc_bi[11:7];
     wire [1:0] phys_target = proc_vin[3:2];
+    wire phys_pulse_done = proc_bi[6];
+    wire [1:0] phys_rest_counter = proc_bi[5:4];
+    localparam [1:0] PHYS_REST_THRESHOLD = 2'd3;
 
     // Target positions (from defines.vh)
     wire [4:0] phys_target_pos;
@@ -320,8 +324,11 @@ module pixel_processing(
     reg [2:0] phys_pos_change_w;
     always @(*) begin
         case (phys_position)
-        5'd0, 5'd1, 5'd2, 5'd3, 5'd4, 5'd5, 5'd6, 5'd7, 5'd8: phys_pos_change_w = 3'd3;
-        5'd9, 5'd10, 5'd11, 5'd12, 5'd13, 5'd14, 5'd15, 5'd16: phys_pos_change_w = 3'd2;
+        5'd0, 5'd1, 5'd2, 5'd3, 5'd4: phys_pos_change_w = 3'd5;
+        5'd5, 5'd6, 5'd7, 5'd8: phys_pos_change_w = 3'd4;
+        5'd9, 5'd10: phys_pos_change_w = 3'd3;
+        5'd11, 5'd12: phys_pos_change_w = 3'd2;
+        5'd13, 5'd14, 5'd15, 5'd16: phys_pos_change_w = 3'd1;
         default: phys_pos_change_w = 3'd2;
         endcase
     end
@@ -330,8 +337,11 @@ module pixel_processing(
     reg [2:0] phys_pos_change_b;
     always @(*) begin
         case (phys_position)
-        5'd0, 5'd1, 5'd2, 5'd3, 5'd4, 5'd5, 5'd6, 5'd7: phys_pos_change_b = 3'd2;
-        5'd8, 5'd9, 5'd10, 5'd11, 5'd12, 5'd13, 5'd14, 5'd15, 5'd16: phys_pos_change_b = 3'd3;
+        5'd0, 5'd1, 5'd2: phys_pos_change_b = 3'd1;
+        5'd3, 5'd4: phys_pos_change_b = 3'd2;
+        5'd5, 5'd6, 5'd7: phys_pos_change_b = 3'd3;
+        5'd8, 5'd9, 5'd10, 5'd11: phys_pos_change_b = 3'd4;
+        5'd12, 5'd13, 5'd14, 5'd15, 5'd16: phys_pos_change_b = 3'd5;
         default: phys_pos_change_b = 3'd3;
         endcase
     end
@@ -585,32 +595,37 @@ module pixel_processing(
         end
         BASEMODE_FAST_GREY: begin
             // Physics-based position tracking with LUT-based asymmetric steps
-            // State: [11:7]=position (0-16), [1:0]=target (B/DG/LG/W)
-            // Global pulse: 1-frame drive at extreme positions
+            // State: [11:7]=position, [6]=pulse_done, [5:4]=rest_counter, [1:0]=target
+            // Per-pixel pulse: after 3 frames at rest at extreme (B/W), pulse once
 
             if (phys_need_drive) begin
-                // Driving toward target - update position
+                // Driving toward target - update position, reset pulse state only when starting new transition
                 if (phys_drive_toward_white) begin
                     proc_output = `DRIVE_WHITE;
-                    proc_bo = {proc_bi[15:12], phys_new_position, proc_bi[6:2], phys_target};
+                    proc_bo = {proc_bi[15:12], phys_new_position, 1'b0, 2'b00, proc_bi[3:2], phys_target};
                 end
                 else begin
                     proc_output = `DRIVE_BLACK;
-                    proc_bo = {proc_bi[15:12], phys_new_position, proc_bi[6:2], phys_target};
+                    proc_bo = {proc_bi[15:12], phys_new_position, 1'b0, 2'b00, proc_bi[3:2], phys_target};
+                end
+            end
+            else if (phys_at_extreme && !phys_pulse_done) begin
+                // At extreme target (B/W) - per-pixel pulse logic
+                if (phys_rest_counter < PHYS_REST_THRESHOLD) begin
+                    // Counting rest frames
+                    proc_output = `NO_DRIVE;
+                    proc_bo = {proc_bi[15:12], phys_position, 1'b0, phys_rest_counter + 2'd1, proc_bi[3:2], phys_target};
+                end
+                else begin
+                    // Rest threshold reached - pulse and mark done
+                    proc_output = phys_at_white ? `DRIVE_WHITE : `DRIVE_BLACK;
+                    proc_bo = {proc_bi[15:12], phys_position, 1'b1, phys_rest_counter, proc_bi[3:2], phys_target};
                 end
             end
             else begin
-                // At target - idle
-                if (doping_pulse && phys_at_extreme) begin
-                    // Global pulse: 1-frame drive for black and white
-                    proc_output = phys_at_white ? `DRIVE_WHITE : `DRIVE_BLACK;
-                    proc_bo = proc_bi;
-                end
-                else begin
-                    // Stay idle
-                    proc_output = `NO_DRIVE;
-                    proc_bo = {proc_bi[15:12], phys_position, proc_bi[6:2], phys_target};
-                end
+                // At grey target, or already pulsed - stay idle
+                proc_output = `NO_DRIVE;
+                proc_bo = {proc_bi[15:12], phys_position, proc_bi[6:4], proc_bi[3:2], phys_target};
             end
         end
         endcase

@@ -73,8 +73,8 @@
 
 // FAST_GREY physics position targets (5-bit scale: 0-16)
 `define POS_BLACK       5'd0
-`define POS_DARK_GREY   5'd5
-`define POS_LIGHT_GREY  5'd11
+`define POS_DARK_GREY   5'd4
+`define POS_LIGHT_GREY  5'd12
 `define POS_WHITE       5'd16
 
 `define OUTPUT_16B
