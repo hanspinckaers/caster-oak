@@ -283,6 +283,19 @@ module caster(
     // Counters for auto LUT mode, free running
     reg [5:0] al_framecnt;
 
+    // Global doping pulse - very gentle: every ~10 seconds at 25fps
+    reg [7:0] doping_counter;
+    reg doping_pulse;
+    localparam DOPING_INTERVAL = 8'd250;
+    localparam ENABLE_DOPING_PULSE = 1'b1;
+    wire doping_pulse_to_pixels = ENABLE_DOPING_PULSE ? doping_pulse : 1'b0;
+
+    // Frame skip for reducing grey input rate (haze testing)
+    // DISABLED for now
+    // reg [1:0] frame_skip_cnt;
+    // wire frame_skip_input = (frame_skip_cnt != 2'd0);
+    wire frame_skip_input = 1'b0;
+
     always @(posedge clk) begin
         case (scan_state)
         SCAN_IDLE: begin
@@ -316,6 +329,17 @@ module caster(
                 else begin
                     al_framecnt <= al_framecnt - 1;
                 end
+                // Update global doping pulse
+                if (doping_counter == 0) begin
+                    doping_counter <= DOPING_INTERVAL;
+                    doping_pulse <= 1'b1;
+                end
+                else begin
+                    doping_counter <= doping_counter - 8'd1;
+                    doping_pulse <= 1'b0;
+                end
+                // Frame skip counter disabled
+                // frame_skip_cnt <= frame_skip_cnt + 2'd1;
             end
             else begin
                 scan_h_cnt <= scan_h_cnt + 1;
@@ -353,6 +377,9 @@ module caster(
             op_state <= `OP_INIT;
             op_framecnt <= OP_INIT_LENGTH;
             al_framecnt <= 0;
+            doping_counter <= DOPING_INTERVAL;
+            doping_pulse <= 1'b0;
+            // frame_skip_cnt <= 2'd0;
         end
     end
 
@@ -437,8 +464,13 @@ module caster(
 
     // STAGE 2
     reg s2_active;
-    always @(posedge clk)
+    reg [10:0] s2_x_cnt;  // Pipeline coordinates to match bi_fifo latency
+    reg [10:0] s2_v_cnt;
+    always @(posedge clk) begin
         s2_active <= s1_active;
+        s2_x_cnt <= h_cnt_offset;
+        s2_v_cnt <= v_cnt_offset;
+    end
 
     // OSD overlay
     wire [3:0] s2_osd_overlay = h_cnt_offset[0] ? osd_rd[7:4] : osd_rd[3:0];
@@ -449,7 +481,7 @@ module caster(
     // Image dithering
     // All these processing has 1 cycle delay
     wire [3:0] s3_pixel_bayer_1b;         // 1-bit per pixel for FAST_MONO (3x3 Bayer)
-    wire [7:0] s3_pixel_bayer_2b;         // 2-bit per pixel for FAST_GREY (4x4 CFA-balanced)
+    wire [7:0] s3_pixel_bayer_2b;         // 2-bit per pixel for FAST_GREY (16x16 half less-yellow CFA)
     wire [3:0] s3_pixel_bn1b_dithered;
     wire [15:0] s3_pixel_bn4b_dithered;
 
@@ -584,7 +616,7 @@ module caster(
     wire [15:0] s2_vin_selected_y4 = {s2_vin_selected[31:28],
         s2_vin_selected[23:20], s2_vin_selected[15:12], s2_vin_selected[7:4]};
 
-    // Degamma
+    // Degamma (gamma 1.5 for most modes)
     wire [31:0] s2_pixel_linear;
     generate
         for (i = 0; i < 4; i = i + 1) begin: gen_degamma
@@ -594,7 +626,17 @@ module caster(
             );
         end
     endgenerate
-    //assign s2_pixel_linear = s2_vin_overlayed;
+
+    // Degamma for FAST_GREY (8-bit input for higher precision)
+    wire [31:0] s2_pixel_linear_fg;
+    generate
+        for (i = 0; i < 4; i = i + 1) begin: gen_degamma_fg
+            degamma_fg_8b degamma_fg_8b (
+                .in(s2_vin_selected[i*8 +: 8]),
+                .out(s2_pixel_linear_fg[i*8 +: 8])
+            );
+        end
+    endgenerate
 
     // Output dithered pixel 1 clock later
     blue_noise_dithering #(
@@ -621,19 +663,32 @@ module caster(
         .y_pos(bn_y_pos)
     );
 
+    // Extract is_colored flags from pixel LSBs (packed in vin_colormixer for RGBW mode)
+    // These indicate true RGB saturation computed before CFA sampling
+    wire [3:0] s2_is_colored = {s2_vin_selected[24], s2_vin_selected[16],
+                                 s2_vin_selected[8], s2_vin_selected[0]};
+    wire [10:0] s2_bayer_idle_x_cnt = (hact > 12'd549) ? 11'd549 : hact[10:0];
+    wire [10:0] s2_bayer_x_cnt = s2_active ? s2_x_cnt : s2_bayer_idle_x_cnt;
+    wire [10:0] s2_bayer_v_cnt = s2_active ? s2_v_cnt : 11'd0;
+
     bayer_dithering #(
         .COLORMODE(COLORMODE),
-        .LINE_WIDTH_MAX(2200) // Max pixels per line for edge detection buffer
+        .LINE_WIDTH_MAX(2200), // Max pixels per line for edge detection buffer
+        .EDGE_THRESH_LOW(60),
+        .EDGE_THRESH_HIGH(195)
     ) bayer_dithering (
         .clk(clk),
         .rst(rst),
-        .vin(s2_pixel_linear),
+        .active(s2_active),
+        .vin(s2_pixel_linear_fg),      // FAST_GREY degamma for 2-bit path
+        .vin_1b(s2_pixel_linear),      // Original 1-bit FAST_MONO Bayer path
+        .is_colored_in(s2_is_colored), // True RGB saturation flags from vin_colormixer
         .vout_1b(s3_pixel_bayer_1b),   // 1-bit for FAST_MONO (3x3 Bayer)
-        .vout_2b(s3_pixel_bayer_2b),   // 2-bit for FAST_GREY (4x4 CFA-balanced)
-        .x_cnt(scan_h_cnt),
-        .y_cnt(scan_v_cnt),
-        .x_pos(by_x_pos),
-        .y_pos(by_y_pos)
+        .vout_2b(s3_pixel_bayer_2b),   // 2-bit for FAST_GREY (16x16 half less-yellow CFA)
+        .x_cnt(s2_bayer_x_cnt),
+        .y_cnt(s2_bayer_v_cnt),
+        .x_pos(s2_bayer_x_cnt[2:0]),
+        .y_pos(s2_bayer_v_cnt[2:0])
     );
 
     // R2 Low Discrepancy Grid dithering - better spatial distribution than Bayer
@@ -653,12 +708,12 @@ module caster(
     reg [63:0] s3_bi_pixel;
     reg [15:0] s3_vin_pixel;
     reg [3:0] s3_op_valid;
-    reg [10:0] s3_x_cnt;  // Pipeline x counter for video detection
+    reg [10:0] s3_v_cnt;  // Pipeline vertical position for CFA row alignment
     always @(posedge clk) begin
         s3_vin_pixel <= s2_vin_selected_y4;
         s3_bi_pixel <= bi_pixel;
         s3_op_valid <= s2_op_valid;
-        s3_x_cnt <= scan_h_cnt;
+        s3_v_cnt <= s2_v_cnt;
     end
 
     // STAGE 3
@@ -736,7 +791,7 @@ module caster(
     reg [15:0] s4_pixel_bn4b_dithered;
     reg [3:0] s4_pixel_r2_dithered;
     reg [3:0] s4_op_valid;
-    reg [10:0] s4_x_cnt;  // Pipeline x counter for video detection
+    reg [10:0] s4_v_cnt;  // Pipeline vertical position for CFA row alignment
 
     always @(posedge clk) begin
         s4_vin_pixel <= s3_vin_pixel;
@@ -747,7 +802,7 @@ module caster(
         s4_pixel_bn4b_dithered <= s3_pixel_bn4b_dithered;
         s4_pixel_r2_dithered <= s3_pixel_r2_dithered;
         s4_op_valid <= s3_op_valid;
-        s4_x_cnt <= s3_x_cnt;
+        s4_v_cnt <= s3_v_cnt;
     end
 
     // STAGE 4
@@ -756,56 +811,11 @@ module caster(
         s4_active <= s3_active;
     end
 
-    // =========================================================================
-    // Video Mode Neighbor Detection
-    // Propagate video mode to neighboring pixels for smoother video regions
-    // =========================================================================
-
-    // Extract video mode flag from each pixel's state
-    // For FAST_GREY mode: video mode when fg_counter >= 3 (bits [9:8] of state)
-    // Also check if mode is FAST_GREY (bits [15:12] = 4'b1011)
-    wire [3:0] cur_video_flags;
-    generate
-        for (i = 0; i < 4; i = i + 1) begin: gen_video_flags
-            wire [15:0] pix_state = s4_bi_pixel[i*16+:16];
-            wire is_fast_grey = (pix_state[15:12] == 4'b1011);
-            wire [1:0] fg_counter = pix_state[9:8];
-            wire [1:0] fg_stage = pix_state[11:10];
-            // Video mode: FAST_GREY + STAGE_DONE (2'd0) + counter >= 3
-            assign cur_video_flags[i] = is_fast_grey && (fg_stage == 2'd0) && (fg_counter >= 2'd3);
-        end
-    endgenerate
-
-    // Horizontal neighbor: previous 4-pixel group
-    reg [3:0] prev_video_flags;
-    always @(posedge clk) begin
-        if (s4_active)
-            prev_video_flags <= cur_video_flags;
-    end
-
-    // Vertical neighbor: line buffer storing video flags from previous line
-    localparam VIDEO_LINE_BUF_DEPTH = 550;  // 2200 pixels / 4 pixels per clock
-    localparam VIDEO_LINE_BUF_AW = 10;      // clog2(550) = 10
-    (* ram_style = "distributed" *)
-    reg [3:0] video_line_buffer [0:VIDEO_LINE_BUF_DEPTH-1];
-    wire [VIDEO_LINE_BUF_AW-1:0] video_buf_addr = s4_x_cnt[VIDEO_LINE_BUF_AW-1:0];
-    wire [3:0] prev_line_video_flags = video_line_buffer[video_buf_addr];
-
-    always @(posedge clk) begin
-        if (s4_active)
-            video_line_buffer[video_buf_addr] <= cur_video_flags;
-    end
-
-    // Compute neighbor_video for each pixel
-    // Check: left neighbor, right neighbor (within group), prev group, prev line
-    wire [3:0] neighbor_video;
-    assign neighbor_video[0] = prev_video_flags[3] | cur_video_flags[1] | prev_line_video_flags[0];
-    assign neighbor_video[1] = cur_video_flags[0] | cur_video_flags[2] | prev_line_video_flags[1];
-    assign neighbor_video[2] = cur_video_flags[1] | cur_video_flags[3] | prev_line_video_flags[2];
-    assign neighbor_video[3] = cur_video_flags[2] | prev_line_video_flags[3];  // No right neighbor yet
-
     wire [7:0] pixel_comb;
     wire [63:0] bo_pixel_comb;
+    // CFA row from vertical counter (0=BW row, 1=GR row)
+    wire s4_cfa_row = s4_v_cnt[0];
+
     generate
         for (i = 0; i < 4; i = i + 1) begin: gen_pix_proc
             wire [3:0] proc_p_or = s4_vin_pixel[i*4+:4];
@@ -818,6 +828,12 @@ module caster(
             wire [15:0] proc_bo;
             wire [1:0] proc_lut_rd = s4_lut_rd[i*2+:2];
             wire [1:0] proc_output;
+            // CFA color detection: 00=Blue, 01=White, 10=Green, 11=Red
+            // Row 0 (BW): i=0,2 are B, i=1,3 are W
+            // Row 1 (GR): i=0,2 are G, i=1,3 are R
+            wire [1:0] cfa_color = (s4_cfa_row == 1'b0) ?
+                (((i == 0) || (i == 2)) ? 2'b00 : 2'b01) :  // Row 0: B or W
+                (((i == 0) || (i == 2)) ? 2'b10 : 2'b11);   // Row 1: G or R
 
             pixel_processing pixel_processing(
                 .csr_lutframe(csr_lut_frame),
@@ -838,7 +854,9 @@ module caster(
                 .op_param(op_param),
                 .op_framecnt(op_framecnt),
                 .al_framecnt(al_framecnt),
-                .neighbor_video(neighbor_video[i])
+                .doping_pulse(doping_pulse_to_pixels),
+                .frame_skip_input(frame_skip_input),
+                .cfa_color(cfa_color)
             );
 
             // Output

@@ -64,12 +64,19 @@
 `define SETMODE_MANUAL_LUT_NO_DITHER       8'd0
 `define SETMODE_MANUAL_LUT_BLUE_NOISE      8'd1
 `define SETMODE_FAST_MONO_NO_DITHER        8'd2
-`define SETMODE_FAST_MONO_BAYER            8'd3
+`define SETMODE_FAST_GREY                  8'd3
 `define SETMODE_FAST_MONO_BLUE_NOISE       8'd4
-`define SETMODE_FAST_GREY                  8'd5
+`define SETMODE_FAST_MONO_BAYER            8'd5
 `define SETMODE_AUTO_LUT_NO_DITHER         8'd6
 `define SETMODE_AUTO_LUT_BLUE_NOISE        8'd7
 `define SETMODE_FAST_MONO_R2               8'd8
+
+// FAST_GREY physics position targets (5-bit logical scale: 0-31)
+`define POS_BLACK       6'd0
+`define POS_DARK_GREY   6'd10
+`define POS_MID_GREY    6'd16
+`define POS_LIGHT_GREY  6'd21
+`define POS_WHITE       6'd31
 
 `define OUTPUT_16B
 
@@ -180,7 +187,8 @@
 `define INIT_FAST_MONO_BN   {MODE_FAST_MONO_BLUE_NOISE, 2'b0, 6'd0, 3'd0, 1'b1}
 `define INIT_FAST_MONO_ND   {MODE_FAST_MONO_NO_DITHER, 2'b0, 6'd0, 3'd0, 1'b1}
 `define INIT_FAST_MONO_R2   {MODE_FAST_MONO_R2, 2'b0, 6'd0, 3'd0, 1'b1}
-`define INIT_FAST_GREY      {MODE_FAST_GREY, STAGE_DONE, 6'd0, 2'd0, 2'b11}
+// FAST_GREY state: [15:12]=mode, [11:6]=position(6-bit), [5:2]=doping_state, [1:0]=target
+`define INIT_FAST_GREY      {MODE_FAST_GREY, `POS_WHITE, 4'd9, 2'b11}
 
-`define DEFAULT_MODE        `INIT_FAST_MONO_BD
+`define DEFAULT_MODE        `INIT_FAST_GREY
 `define INPUT_LVDS 

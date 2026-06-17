@@ -32,7 +32,9 @@ module pixel_processing(
     input  wire [7:0]  op_param,    // External operation parameter
     input  wire [7:0]  op_framecnt, // Current overall frame counter for state
     input  wire [5:0]  al_framecnt, // Auto LUT mode frame counter
-    input  wire        neighbor_video  // Neighbor pixel is in video mode (FAST_GREY)
+    input  wire        doping_pulse,   // Global doping pulse (1 frame every ~5 sec)
+    input  wire        frame_skip_input, // Ignore new input this frame (halve input rate)
+    input  wire [1:0]  cfa_color       // CFA color: 00=Blue, 01=White, 10=Green, 11=Red
 );
 
     // Pixel state: 16bits
@@ -48,26 +50,19 @@ module pixel_processing(
     localparam MODE_AUTO_LUT_BLUE_NOISE = 4'd13; // 1101
     localparam MODE_FAST_MONO_R2 = 4'd14; // 1110 - R2 LDG dithering
 
-    localparam FASTM_B2W_FRAMES = 6'd8;      // MONO duration: 3 drive + 1 rest + 4 drive
-    localparam FASTM_W2B_FRAMES = 6'd8;
-    localparam FASTM_MID_REST_START = 4'd5;  // Rest at frame 5 only (1 frame)
-    localparam FASTM_MID_REST_END = 4'd4;    // Resume drive at frame 4
+    localparam FASTM_B2W_FRAMES = 6'd7;      // MONO duration for all pixels
+    localparam FASTM_W2B_FRAMES = 6'd6;
 
-    // FAST_GREY timing (B/W=8+5=13, Grey=8+2+3=13)
+    // FAST_MONO doping marker: [11:10] = 10 means in doping sequence
+    localparam [1:0] FASTM_DOPING_MARKER = 2'b10;
+    // FAST_MONO cooldown after transition before doping eligibility.
+    localparam [3:0] FASTM_DOPING_COOLDOWN = 4'd8;
+
+    // FAST_GREY timing (synchronized: B/W=7+5=12, Grey=7+2+3=12)
     localparam FASTG_BW_REST_FRAMES = 6'd5;  // REST for B/W after MONO
     localparam FASTG_B2G_FRAMES = 6'd2;      // Reverse frames for grey (black side)
     localparam FASTG_W2G_FRAMES = 6'd2;      // Reverse frames for grey (white side)
     localparam FASTG_SETTLE_FRAMES = 6'd3;   // REST for grey after reverse
-    localparam [3:0] FASTG_VIDEO_COOLDOWN = 4'd8; // Frames before counter decays (4-bit, max 15)
-
-    // White refresh: micro-jiggle (AC waveform, net zero DC)
-    localparam [5:0] WREFRESH_DELAY_FRAMES = 6'd60;     // ~1 second delay before first pulse
-    localparam [5:0] WREFRESH_DELAY2_FRAMES = 6'd30;    // ~0.5 second between pulses
-    // Micro-jiggle: B(1)→W(1)→B(1)→W(1)→B(1)→W(1)→REST(2) = 8 frames, net 0 DC
-    // 3 cycles of BLACK-WHITE alternation
-    localparam [3:0] WREFRESH_CYCLES = 4'd3;            // Number of B-W cycles
-    localparam [3:0] WREFRESH_POST_REST_FRAMES = 4'd2;  // Final settle
-    // Total per pulse: 3*2 + 2 = 8 frames
 
     localparam AUTOLUT_HOLDOFF_FRAMES = 6'd60;
 
@@ -262,13 +257,8 @@ module pixel_processing(
     );*/
     assign proc_p_li = {proc_p_or, 4'b0};
 
-    // FAST_GREY: bypass dithering for pure black/white, only dither mid-tones
-    wire [1:0] fg_2b_input = (proc_p_or == 4'd0)  ? 2'b00 :  // Pure black
-                             (proc_p_or == 4'd15) ? 2'b11 :  // Pure white
-                             proc_p_bd_2b;                   // Dithered mid-tones
-
     wire [3:0] proc_vin = force_clear ? clear_color :
-        (pixel_basemode == BASEMODE_FAST_GREY) ? ({fg_2b_input, 2'b0}) :
+        (pixel_basemode == BASEMODE_FAST_GREY) ? ({proc_p_bd_2b, 2'b0}) :
         (pixel_dither == DITHER_NONE) ? (proc_p_or) :
         (pixel_dither == DITHER_BAYER) ? ({4{proc_p_bd_1b}}) :
         (pixel_dither == DITHER_BN_1BIT) ? ({4{proc_p_n1}}) :
@@ -284,23 +274,167 @@ module pixel_processing(
     wire [1:0] drive_towards_input = proc_vin[3] ? `DRIVE_WHITE: `DRIVE_BLACK;
     wire [1:0] drive_against_input = proc_vin[3] ? `DRIVE_BLACK: `DRIVE_WHITE;
 
-    // FAST_GREY helper: check if target is grey (01 or 10)
-    wire fg_is_grey_target = (proc_vin[3:2] == 2'b01) || (proc_vin[3:2] == 2'b10);
-    // Round target to mono (B=00 or W=11) based on MSB - for video/rapid changes
-    wire [1:0] proc_vin_mono = {proc_vin[3], proc_vin[3]};
-    // FAST_GREY frame counter split: [5:4]=change counter, [3:0]=stage frames
-    wire [1:0] fg_counter = pixel_framecnt[5:4];
-    wire [3:0] fg_frames = pixel_framecnt[3:0];
-    wire [1:0] fg_counter_inc = (fg_counter == 2'd3) ? 2'd3 : (fg_counter + 2'd1);
-    wire [1:0] fg_counter_dec = (fg_counter == 2'd0) ? 2'd0 : (fg_counter - 2'd1);
-    wire [3:0] fg_frames_dec = fg_frames - 4'd1;
-    // Mid-transition direction change: calculate new frame count
-    wire [3:0] fg_frames_2w = FASTM_B2W_FRAMES[3:0] - fg_frames + 4'd1;
-    wire [3:0] fg_frames_2b = FASTM_W2B_FRAMES[3:0] - fg_frames + 4'd1;
-    // Video mode: 3+ changes within cooldown window, OR neighbor is in video mode
-    wire fg_video_mode = (pixel_stage == STAGE_DONE) && ((fg_counter >= 2'd3) || neighbor_video);
-    // Detect any transition TO white (from black or grey, not from white)
-    wire fg_to_white = (pixel_prev[1:0] != 2'b11) && (proc_vin[3:2] == 2'b11);
+    // FAST_MONO doping state decode
+    wire fm_doping_mode = (proc_bi[11:10] == FASTM_DOPING_MARKER);
+    wire fm_cooldown_mode = (proc_bi[11:10] == 2'b01);
+    wire [3:0] fm_cooldown = pixel_framecnt[3:0];
+    wire [1:0] fm_dc_bias = pixel_mindrv;  // Reuse as dc_bias when idle
+    wire fm_doping_done = pixel_prev[1];   // bit 1 = doping phase (0=needs, 1=done)
+
+    // =========================================================================
+    // FAST_GREY Physics-Based Position Tracking (6-bit linear)
+    // =========================================================================
+    //
+    // PIXEL STATE WORD (proc_bo/proc_bi) bit layout:
+    //   [15:12] - Mode (4 bits)
+    //   [11:6]  - Position (6 bits, 0-31 logical scale)
+    //   [5:2]   - State (4 bits): 0=idle, 1-9=reserved/done, 10=driving->black,
+    //                            11=driving->white, 14=legacy rest, 15=legacy settling
+    //   [1:0]   - Target (2 bits: B=00, DG=01, LG=10, W=11)
+    //
+    // Position scale: 0=black, 10=dark grey, 21=light grey, 31=white
+    // Toward white/black: empirically tuned x2 scaled physical step LUTs
+    // Global doping pulses may still reinforce B/W extremes.
+    //
+    // =========================================================================
+
+    wire [5:0] phys_position = proc_bi[11:6];
+    wire [3:0] phys_doping_state = proc_bi[5:2];
+    wire [1:0] phys_target = proc_vin[3:2];
+
+    wire [5:0] phys_target_pos;
+    assign phys_target_pos =
+        (phys_target == 2'b00) ? `POS_BLACK :
+        (phys_target == 2'b01) ? `POS_DARK_GREY :
+        (phys_target == 2'b10) ? `POS_LIGHT_GREY :
+        `POS_WHITE;
+
+    // Step toward white (x2 scaled)
+    reg [4:0] phys_step_w_scaled;
+    always @(*) begin
+        case (phys_position[4:0])
+        5'd0:  phys_step_w_scaled = 5'd6;
+        5'd1:  phys_step_w_scaled = 5'd7;
+        5'd2:  phys_step_w_scaled = 5'd11;
+        5'd3:  phys_step_w_scaled = 5'd14;
+        5'd4:  phys_step_w_scaled = 5'd14;
+        5'd5:  phys_step_w_scaled = 5'd14;
+        5'd6:  phys_step_w_scaled = 5'd14;
+        5'd7:  phys_step_w_scaled = 5'd14;
+        5'd8:  phys_step_w_scaled = 5'd14;
+        5'd9:  phys_step_w_scaled = 5'd14;
+        5'd10:  phys_step_w_scaled = 5'd16;
+        5'd11:  phys_step_w_scaled = 5'd16;
+        5'd12:  phys_step_w_scaled = 5'd16;
+        5'd13:  phys_step_w_scaled = 5'd16;
+        5'd14:  phys_step_w_scaled = 5'd16;
+        5'd15:  phys_step_w_scaled = 5'd16;
+        5'd16:  phys_step_w_scaled = 5'd16;
+        5'd17:  phys_step_w_scaled = 5'd16;
+        5'd18:  phys_step_w_scaled = 5'd16;
+        5'd19:  phys_step_w_scaled = 5'd16;
+        5'd20:  phys_step_w_scaled = 5'd16;
+        5'd21:  phys_step_w_scaled = 5'd14;
+        5'd22:  phys_step_w_scaled = 5'd11;
+        5'd23:  phys_step_w_scaled = 5'd7;
+        5'd24:  phys_step_w_scaled = 5'd4;
+        5'd25:  phys_step_w_scaled = 5'd3;
+        5'd26:  phys_step_w_scaled = 5'd2;
+        5'd27:  phys_step_w_scaled = 5'd2;
+        5'd28:  phys_step_w_scaled = 5'd2;
+        5'd29:  phys_step_w_scaled = 5'd2;
+        5'd30:  phys_step_w_scaled = 5'd2;
+        5'd31:  phys_step_w_scaled = 5'd2;
+        default: phys_step_w_scaled = 5'd2;
+        endcase
+    end
+
+    // Step toward black (x2 scaled)
+    reg [4:0] phys_step_b_scaled;
+    always @(*) begin
+        case (phys_position[4:0])
+        5'd0:  phys_step_b_scaled = 5'd2;
+        5'd1:  phys_step_b_scaled = 5'd2;
+        5'd2:  phys_step_b_scaled = 5'd2;
+        5'd3:  phys_step_b_scaled = 5'd2;
+        5'd4:  phys_step_b_scaled = 5'd2;
+        5'd5:  phys_step_b_scaled = 5'd2;
+        5'd6:  phys_step_b_scaled = 5'd3;
+        5'd7:  phys_step_b_scaled = 5'd4;
+        5'd8:  phys_step_b_scaled = 5'd6;
+        5'd9:  phys_step_b_scaled = 5'd10;
+        5'd10:  phys_step_b_scaled = 5'd13;
+        5'd11:  phys_step_b_scaled = 5'd15;
+        5'd12:  phys_step_b_scaled = 5'd16;
+        5'd13:  phys_step_b_scaled = 5'd16;
+        5'd14:  phys_step_b_scaled = 5'd16;
+        5'd15:  phys_step_b_scaled = 5'd16;
+        5'd16:  phys_step_b_scaled = 5'd16;
+        5'd17:  phys_step_b_scaled = 5'd16;
+        5'd18:  phys_step_b_scaled = 5'd16;
+        5'd19:  phys_step_b_scaled = 5'd16;
+        5'd20:  phys_step_b_scaled = 5'd16;
+        5'd21:  phys_step_b_scaled = 5'd16;
+        5'd22:  phys_step_b_scaled = 5'd14;
+        5'd23:  phys_step_b_scaled = 5'd14;
+        5'd24:  phys_step_b_scaled = 5'd14;
+        5'd25:  phys_step_b_scaled = 5'd14;
+        5'd26:  phys_step_b_scaled = 5'd14;
+        5'd27:  phys_step_b_scaled = 5'd14;
+        5'd28:  phys_step_b_scaled = 5'd14;
+        5'd29:  phys_step_b_scaled = 5'd11;
+        5'd30:  phys_step_b_scaled = 5'd7;
+        5'd31:  phys_step_b_scaled = 5'd6;
+        default: phys_step_b_scaled = 5'd2;
+        endcase
+    end
+
+    wire [3:0] phys_step_w = phys_step_w_scaled[4:1];
+    wire [3:0] phys_step_b = phys_step_b_scaled[4:1];
+
+    wire phys_dir_white = phys_target_pos > phys_position;
+    wire phys_dir_black = phys_target_pos < phys_position;
+
+    wire [5:0] phys_new_position_w_raw = phys_position + {2'b0, phys_step_w};
+    wire [5:0] phys_new_position_b_raw = phys_position - {2'b0, phys_step_b};
+    wire phys_underflow = (phys_position < {2'b0, phys_step_b});
+
+    wire phys_at_target = (phys_position == phys_target_pos);
+    wire phys_need_drive = !phys_at_target;
+    wire phys_drive_toward_white = phys_need_drive && phys_dir_white;
+    wire phys_drive_toward_black = phys_need_drive && phys_dir_black;
+
+    // Strict-error motion: only drive a step if it reduces distance to target.
+    wire [5:0] phys_new_position_w = (phys_new_position_w_raw > `POS_WHITE) ?
+                                      `POS_WHITE : phys_new_position_w_raw;
+    wire [5:0] phys_new_position_b = phys_underflow ? `POS_BLACK : phys_new_position_b_raw;
+
+    wire [5:0] phys_new_position = phys_drive_toward_white ? phys_new_position_w :
+                                    phys_drive_toward_black ? phys_new_position_b :
+                                    phys_position;
+
+    wire [5:0] phys_cur_err = phys_dir_white ? (phys_target_pos - phys_position) :
+                              phys_dir_black ? (phys_position - phys_target_pos) :
+                              6'd0;
+    wire [5:0] phys_next_err = (phys_new_position < phys_target_pos) ?
+                               (phys_target_pos - phys_new_position) :
+                               (phys_new_position - phys_target_pos);
+    wire phys_strict_progress = phys_need_drive && (phys_next_err < phys_cur_err);
+    wire phys_reaching_target = (phys_new_position == phys_target_pos) && phys_strict_progress;
+    wire phys_at_black = (phys_position == `POS_BLACK);
+    wire phys_at_white = (phys_position == `POS_WHITE);
+    wire phys_at_extreme = phys_at_black || phys_at_white;
+
+    // State encoding [5:2]:
+    //   0: idle                      10: driving toward black
+    //   1-9: reserved/done           11: driving toward white
+    //   12-13: reserved              14: legacy one-frame rest
+    //   15: legacy settling
+
+    wire phys_resting = (phys_doping_state == 4'd14);
+    wire phys_settling = (phys_doping_state == 4'd15);
+
+    wire phys_doping_done = (phys_doping_state >= 4'd9); // 9=idle B/W, pulse-eligible
 
     always @(*) begin
         // Normal mode, init mode override later
@@ -408,227 +542,170 @@ module pixel_processing(
             end
         end
         BASEMODE_FAST_MONO: begin
-            if (pixel_framecnt != 0) begin
-                // Dynamic frame rate cap:
-                // Once the pixel state is changed, the DYFRC field is reset to
-                // the CSR val.
-                // The field value is then decremented every frame until 0
-                // Change to a new color is only allowed if the field is 0
-                // Currently updating
+            // FAST_MONO with per-pixel doping
+            // State encoding:
+            //   [11:10] = 00: Normal (transitioning if framecnt>0, fully idle if framecnt==0)
+            //   [11:10] = 01: Cooldown after transition (framecnt[3:0] = cooldown timer)
+            //   [11:10] = 10: In doping sequence (framecnt[3:0] = doping countdown)
+            //   [9:4] = frame counter or timer
+            //   [3:2] = mindrv (transition) or doping phase: 00=needs, 01=in progress, 10=done
+            //   [1:0] = {reserved, prev_pixel}
+
+            if (pixel_framecnt != 0 && !fm_doping_mode && !fm_cooldown_mode) begin
+                // Currently transitioning
                 if ((proc_vin[3] != pixel_prev[0]) && (pixel_mindrv == 2'd0)) begin
-                    // Pixel state changed
+                    // Pixel state changed mid-transition
                     proc_output = drive_towards_input;
                     proc_bo = proc_vin[3] ? (
-                        {proc_bi[15:10], pixel_framecnt_2w, csr_mindrv, 2'd1}
-                    ) : {proc_bi[15:10], pixel_framecnt_2b, csr_mindrv, 2'd0};
+                        {proc_bi[15:12], 2'b00, pixel_framecnt_2w, csr_mindrv, 2'd1}
+                    ) : {proc_bi[15:12], 2'b00, pixel_framecnt_2b, csr_mindrv, 2'd0};
+                end
+                else if (pixel_framecnt == 6'd1) begin
+                    // Last frame of transition - enter cooldown, reset doping phase
+                    proc_output = pixel_prev[0] ? `DRIVE_WHITE : `DRIVE_BLACK;
+                    proc_bo = {proc_bi[15:12], 2'b01, 2'b00, FASTM_DOPING_COOLDOWN, 2'b00, proc_bi[1:0]};
                 end
                 else begin
-                    // Pixel state not changed
+                    // Continue driving
                     proc_output = pixel_prev[0] ? `DRIVE_WHITE : `DRIVE_BLACK;
-                    proc_bo = {proc_bi[15:10], pixel_framecnt_dec, pixel_mindrv_dec, proc_bi[1:0]};
+                    proc_bo = {proc_bi[15:12], 2'b00, pixel_framecnt_dec, pixel_mindrv_dec, proc_bi[1:0]};
+                end
+            end
+            else if (fm_cooldown_mode) begin
+                // In cooldown after transition
+                if (proc_vin[3] != pixel_prev[0]) begin
+                    // Pixel state changed during cooldown - start new transition
+                    proc_output = drive_towards_input;
+                    proc_bo = proc_vin[3] ? (
+                        {proc_bi[15:12], 2'b00, FASTM_B2W_FRAMES, csr_mindrv, 2'b01}
+                    ) : {proc_bi[15:12], 2'b00, FASTM_W2B_FRAMES, csr_mindrv, 2'b00};
+                end
+                else if (fm_cooldown > 4'd1) begin
+                    // Cooldown countdown
+                    proc_output = `NO_DRIVE;
+                    proc_bo = {proc_bi[15:12], 2'b01, 2'b00, fm_cooldown - 4'd1, proc_bi[3:0]};
+                end
+                else begin
+                    // Cooldown done - become fully idle
+                    proc_output = `NO_DRIVE;
+                    proc_bo = {proc_bi[15:12], 2'b00, 6'd0, proc_bi[3:0]};
+                end
+            end
+            else if (fm_doping_mode) begin
+                // In per-pixel doping sequence
+                if (proc_vin[3] != pixel_prev[0]) begin
+                    // Pixel state changed during doping - start new transition
+                    proc_output = drive_towards_input;
+                    proc_bo = proc_vin[3] ? (
+                        {proc_bi[15:12], 2'b00, FASTM_B2W_FRAMES, csr_mindrv, 2'b01}
+                    ) : {proc_bi[15:12], 2'b00, FASTM_W2B_FRAMES, csr_mindrv, 2'b00};
+                end
+                else if (fm_cooldown > 4'd1) begin
+                    // Doping countdown - drive pixel
+                    proc_output = pixel_prev[0] ? `DRIVE_WHITE : `DRIVE_BLACK;
+                    proc_bo = {proc_bi[15:12], 2'b10, 2'b00, fm_cooldown - 4'd1, proc_bi[3:0]};
+                end
+                else if (fm_cooldown == 4'd1) begin
+                    // Final frame of doping - drive and advance phase
+                    proc_output = pixel_prev[0] ? `DRIVE_WHITE : `DRIVE_BLACK;
+                    if (pixel_mindrv == 2'b00)
+                        // First phase done -> second phase (wait 8 frames then dope again)
+                        proc_bo = {proc_bi[15:12], 2'b10, 2'b00, 4'd8, 2'b01, proc_bi[1:0]};
+                    else
+                        // Second phase done -> mark done, go idle
+                        proc_bo = {proc_bi[15:12], 2'b00, 6'd0, 2'b10, proc_bi[1:0]};
+                end
+                else begin
+                    // fm_cooldown == 0: between doping phases, start second phase
+                    proc_output = `NO_DRIVE;
+                    if (pixel_mindrv == 2'b01)
+                        // Start second doping phase
+                        proc_bo = pixel_prev[0] ?
+                            {proc_bi[15:12], 2'b10, 2'b00, 4'd2, 2'b01, proc_bi[1:0]} :
+                            {proc_bi[15:12], 2'b10, 2'b00, 4'd4, 2'b01, proc_bi[1:0]};
+                    else
+                        // Already done, go idle
+                        proc_bo = {proc_bi[15:12], 2'b00, 6'd0, 2'b10, proc_bi[1:0]};
                 end
             end
             else begin
-                // Not currently updating
+                // Fully idle (framecnt == 0, not in cooldown or doping)
                 if (proc_vin[3] != pixel_prev[0]) begin
-                    // Pixel state changed
+                    // Pixel state changed - start transition, reset doping phase
                     proc_output = drive_towards_input;
                     proc_bo = proc_vin[3] ? (
-                        {proc_bi[15:10], FASTM_B2W_FRAMES, csr_mindrv, 2'd1}
-                    ) : {proc_bi[15:10], FASTM_W2B_FRAMES, csr_mindrv, 2'd0};
+                        {proc_bi[15:12], 2'b00, FASTM_B2W_FRAMES, csr_mindrv, 2'b01}
+                    ) : {proc_bi[15:12], 2'b00, FASTM_W2B_FRAMES, csr_mindrv, 2'b00};
+                end
+                else if (doping_pulse) begin
+                    // Global pulse: 1-frame drive for all idle pixels
+                    proc_output = pixel_prev[0] ? `DRIVE_WHITE : `DRIVE_BLACK;
+                    proc_bo = proc_bi;
+                end
+                else if (pixel_mindrv == 2'b00) begin
+                    // Needs doping (phase=00): start per-pixel sequence
+                    // Black gets 4 frames, White gets 2 frames
+                    proc_output = `NO_DRIVE;
+                    proc_bo = pixel_prev[0] ?
+                        {proc_bi[15:12], 2'b10, 2'b00, 4'd2, 2'b00, proc_bi[1:0]} :
+                        {proc_bi[15:12], 2'b10, 2'b00, 4'd4, 2'b00, proc_bi[1:0]};
                 end
                 else begin
-                    // Pixel state not changed
+                    // Already doped (phase=10) or in progress - stay idle
                     proc_output = `NO_DRIVE;
                     proc_bo = proc_bi;
                 end
             end
         end
         BASEMODE_FAST_GREY: begin
-            // Synchronized driving with reversal for grey targets
-            // All pixels drive to extreme during MONO (7 frames)
-            // B/W: REST in HOLD (5 frames), total 12
-            // Grey: REVERSE + REST in GREY (2+3 frames), total 12
-            // Frame counter encoding: [5:4]=video counter, [3:0]=stage frames
-            // pixel_prev[1:0] = target (00=B, 01=DG, 10=LG, 11=W)
-            // pixel_prev[3:2] = mindrv (MONO) or unused (other stages)
+            // 6-bit linear position tracking
+            // State: [11:6]=position, [5:2]=doping_state, [1:0]=target
 
-            if (pixel_stage == STAGE_MONO) begin
-                // Drive towards binary target (MSB of grey level)
-                // Add mid-rest: drive 3 frames, rest 3 frames, drive 4 frames
-                // Frames 10,9,8: drive | 7,6,5: rest | 4,3,2,1: drive
-                if ((fg_frames <= FASTM_MID_REST_START) && (fg_frames > FASTM_MID_REST_END)) begin
-                    proc_output = `NO_DRIVE;  // Mid-rest at frames 7,6,5
-                end
-                else begin
-                    proc_output = pixel_prev[1] ? `DRIVE_WHITE : `DRIVE_BLACK;
-                end
-                if ((proc_vin[3] != pixel_prev[1]) && (pixel_mindrv == 2'd0)) begin
-                    // Binary direction changed mid-transition - restart with MONO target (video mode)
-                    proc_bo = proc_vin[3] ? (
-                        {proc_bi[15:12], STAGE_MONO, fg_counter, fg_frames_2w, csr_mindrv, proc_vin_mono}
-                    ) : {proc_bi[15:12], STAGE_MONO, fg_counter, fg_frames_2b, csr_mindrv, proc_vin_mono};
-                end
-                else if (fg_frames == 0) begin
-                    // MONO done - B/W goes to HOLD (REST), Grey goes to GREY (REVERSE)
-                    // For grey→white (marked by pixel_mindrv==2'b11), set maintenance flag
-                    if (fg_is_grey_target)
-                        proc_bo = {proc_bi[15:12], STAGE_GREY, fg_counter, FASTG_B2G_FRAMES[3:0] + FASTG_SETTLE_FRAMES[3:0], 2'b00, proc_vin[3:2]};
-                    else
-                        // bits[3:2] = maintenance flag (2'b11 if grey→white, from pixel_mindrv)
-                        proc_bo = {proc_bi[15:12], STAGE_HOLD, fg_counter, FASTG_BW_REST_FRAMES[3:0], pixel_mindrv, proc_vin[3:2]};
-                end
-                else begin
-                    proc_bo = {proc_bi[15:12], STAGE_MONO, fg_counter, fg_frames_dec, pixel_mindrv_dec, proc_bi[1:0]};
-                end
-            end
-            else if (pixel_stage == STAGE_HOLD) begin
-                // REST for B/W targets (NO_DRIVE)
+            if (phys_settling && (phys_target == proc_bi[1:0])) begin
+                // Legacy settling state: target unchanged, settle to target position
                 proc_output = `NO_DRIVE;
-                if (proc_vin[3] != pixel_prev[1]) begin
-                    // Binary direction changed - restart MONO with mono target (video mode)
-                    proc_bo = proc_vin[3] ? (
-                        {proc_bi[15:12], STAGE_MONO, fg_counter, FASTM_B2W_FRAMES[3:0], csr_mindrv, proc_vin_mono}
-                    ) : {proc_bi[15:12], STAGE_MONO, fg_counter, FASTM_W2B_FRAMES[3:0], csr_mindrv, proc_vin_mono};
-                end
-                else if (fg_frames == 0) begin
-                    // Check if needs white refresh (any→white, fg_counter==2)
-                    if ((fg_counter == 2'd2) && (pixel_prev[1:0] == 2'b11)) begin
-                        // Enter DONE with white refresh pending: ~1 sec delay first
-                        // Use full 6-bit framecnt for delay, marker [3:2]=2'b10
-                        proc_bo = {proc_bi[15:12], STAGE_DONE, WREFRESH_DELAY_FRAMES, 2'b10, proc_vin[3:2]};
-                    end
-                    else begin
-                        // Enter DONE: preserve counter, set cooldown timer
-                        proc_bo = {proc_bi[15:12], STAGE_DONE, fg_counter, FASTG_VIDEO_COOLDOWN, 2'b00, proc_vin[3:2]};
-                    end
+                proc_bo = {proc_bi[15:12], phys_target_pos, 4'd0, phys_target};
+            end
+            else if (phys_settling) begin
+                // Target changed during settling: cancel before strict-error driving resumes
+                proc_output = `NO_DRIVE;
+                proc_bo = {proc_bi[15:12], phys_position, 4'd0, phys_target};
+            end
+            else if (phys_resting) begin
+                // Recover old state-14 pixels by resuming normal driving on the next frame.
+                proc_output = `NO_DRIVE;
+                proc_bo = {proc_bi[15:12], phys_position,
+                           phys_need_drive ?
+                           (phys_drive_toward_white ? 4'd11 : 4'd10) : 4'd0,
+                           phys_target};
+            end
+            else if (phys_need_drive) begin
+                if (phys_strict_progress) begin
+                    // Normal strict-error driving; stop tracking drive state once target is reached.
+                    proc_output = phys_drive_toward_white ? `DRIVE_WHITE : `DRIVE_BLACK;
+                    proc_bo = {proc_bi[15:12], phys_new_position,
+                               phys_reaching_target ? 4'd0 :
+                               (phys_drive_toward_white ? 4'd11 : 4'd10), phys_target};
                 end
                 else begin
-                    proc_bo = {proc_bi[15:12], STAGE_HOLD, fg_counter, fg_frames_dec, proc_bi[3:0]};
+                    // Strict-error stop: the next full step would not reduce target error.
+                    proc_output = `NO_DRIVE;
+                    proc_bo = {proc_bi[15:12], phys_position, 4'd0, phys_target};
                 end
             end
-            else if (pixel_stage == STAGE_GREY) begin
-                // Two modes:
-                // 1. Normal grey reversal (fg_counter != 0): reverse drive then rest
-                // 2. White refresh (fg_counter == 0): BLACK→WHITE→REST→WHITE push
-                if (proc_vin[3] != pixel_prev[1]) begin
-                    // Binary direction changed - restart MONO with mono target (video mode)
-                    proc_output = `NO_DRIVE;
-                    proc_bo = proc_vin[3] ? (
-                        {proc_bi[15:12], STAGE_MONO, fg_counter, FASTM_B2W_FRAMES[3:0], csr_mindrv, proc_vin_mono}
-                    ) : {proc_bi[15:12], STAGE_MONO, fg_counter, FASTM_W2B_FRAMES[3:0], csr_mindrv, proc_vin_mono};
-                end
-                else if (fg_frames == 0) begin
-                    // Enter DONE: preserve counter, set cooldown timer
-                    proc_output = `NO_DRIVE;
-                    proc_bo = {proc_bi[15:12], STAGE_DONE, fg_counter, FASTG_VIDEO_COOLDOWN, 2'b00, proc_bi[1:0]};
-                end
-                else if (fg_counter == 0) begin
-                    // Micro-jiggle: B(1)→W(1)→B(1)→W(1)→B(1)→W(1)→REST(2)
-                    // Alternating BLACK/WHITE for net zero DC, then rest
-                    // pixel_prev[3:2]: 2'b10=first pulse, 2'b11=second pulse
-                    if (fg_frames > WREFRESH_POST_REST_FRAMES) begin
-                        // In jiggle phase - alternate BLACK/WHITE each frame
-                        // Even offset from end = BLACK, odd offset = WHITE
-                        if (fg_frames[0] == 1'b0)
-                            proc_output = `DRIVE_BLACK;
-                        else
-                            proc_output = `DRIVE_WHITE;
-                    end
-                    else begin
-                        proc_output = `NO_DRIVE;     // Final rest
-                    end
-
-                    if (fg_frames == 4'd1) begin
-                        // Pulse finishing - check if need second pulse
-                        if (pixel_prev[3:2] == 2'b10) begin
-                            // First pulse done - schedule second with shorter delay
-                            proc_bo = {proc_bi[15:12], STAGE_DONE, WREFRESH_DELAY2_FRAMES, 2'b11, pixel_prev[1:0]};
-                        end
-                        else begin
-                            // Second pulse done - go to normal DONE
-                            proc_bo = {proc_bi[15:12], STAGE_DONE, 2'd0, FASTG_VIDEO_COOLDOWN, 2'b00, pixel_prev[1:0]};
-                        end
-                    end
-                    else begin
-                        proc_bo = {proc_bi[15:12], STAGE_GREY, fg_counter, fg_frames_dec, proc_bi[3:0]};
-                    end
-                end
-                else begin
-                    // Normal grey reversal: 2 phases (reverse drive, then rest)
-                    if (fg_frames > FASTG_SETTLE_FRAMES[3:0]) begin
-                        proc_output = pixel_prev[1] ? `DRIVE_BLACK : `DRIVE_WHITE;
-                    end
-                    else begin
-                        proc_output = `NO_DRIVE;
-                    end
-                    proc_bo = {proc_bi[15:12], STAGE_GREY, fg_counter, fg_frames_dec, proc_bi[3:0]};
-                end
+            else if (phys_at_extreme && !phys_doping_done) begin
+                // No per-pixel B/W boost; mark done so idle extremes stay quiet.
+                proc_output = `NO_DRIVE;
+                proc_bo = {proc_bi[15:12], phys_position, 4'd9, phys_target};
             end
-            else if (pixel_stage == STAGE_DONE) begin
-                // Three modes based on pixel_prev[3:2]:
-                // - 2'b10: First white refresh pulse pending
-                // - 2'b11: Second white refresh pulse pending
-                // - Other: Normal mode (fg_counter in [5:4], fg_frames in [3:0])
-                if (pixel_prev[3:2] == 2'b10 || pixel_prev[3:2] == 2'b11) begin
-                    // White refresh pending mode - waiting before pulse
+            else begin
+                if (doping_pulse && phys_at_extreme && phys_doping_done) begin
+                    // Repeating gentle global pulse: reinforce idle B/W extremes on every pulse.
+                    proc_output = phys_at_white ? `DRIVE_WHITE : `DRIVE_BLACK;
+                    proc_bo = {proc_bi[15:12], phys_position, 4'd9, phys_target};
+                end else begin
                     proc_output = `NO_DRIVE;
-                    if (proc_vin[3:2] != pixel_prev[1:0]) begin
-                        // Target changed - cancel refresh and start new transition
-                        proc_bo = proc_vin[3] ? (
-                            {proc_bi[15:12], STAGE_MONO, fg_to_white ? 2'd2 : 2'd1, FASTM_B2W_FRAMES[3:0], csr_mindrv, proc_vin[3:2]}
-                        ) : {proc_bi[15:12], STAGE_MONO, 2'd1, FASTM_W2B_FRAMES[3:0], csr_mindrv, proc_vin[3:2]};
-                    end
-                    else if (pixel_framecnt == 0) begin
-                        // Delay expired - enter GREY for micro-jiggle pulse
-                        // Keep marker to know which pulse this is
-                        // Total frames: CYCLES*2 + POST_REST = 3*2 + 2 = 8
-                        proc_bo = {proc_bi[15:12], STAGE_GREY, 2'd0,
-                            (WREFRESH_CYCLES << 1) + WREFRESH_POST_REST_FRAMES,
-                            proc_bi[3:0]};
-                    end
-                    else begin
-                        // Still waiting - decrement full 6-bit counter
-                        proc_bo = {proc_bi[15:12], STAGE_DONE, pixel_framecnt_dec, proc_bi[3:0]};
-                    end
-                end
-                else if (proc_vin[3:2] != pixel_prev[1:0]) begin
-                    // Target changed - increment counter and start transition
-                    proc_output = `NO_DRIVE;
-                    // Video mode: 3+ changes within cooldown window, force mono
-                    // Still set white refresh marker (2'd2) when going to white
-                    if (fg_video_mode) begin
-                        proc_bo = proc_vin[3] ? (
-                            {proc_bi[15:12], STAGE_MONO, 2'd2, FASTM_B2W_FRAMES[3:0], csr_mindrv, proc_vin_mono}
-                        ) : {proc_bi[15:12], STAGE_MONO, fg_counter, FASTM_W2B_FRAMES[3:0], csr_mindrv, proc_vin_mono};
-                    end
-                    // Same-side grey transition (W→LG or B→DG): skip MONO
-                    else if (fg_is_grey_target && (proc_vin[3] == pixel_prev[1])) begin
-                        proc_bo = {proc_bi[15:12], STAGE_GREY, fg_counter_inc, FASTG_B2G_FRAMES[3:0] + FASTG_SETTLE_FRAMES[3:0], 2'b00, proc_vin[3:2]};
-                    end
-                    else begin
-                        // Different side or B/W target: need full MONO
-                        // For any→white, use fg_counter=2 to trigger white refresh ONCE
-                        proc_bo = proc_vin[3] ? (
-                            {proc_bi[15:12], STAGE_MONO, fg_to_white ? 2'd2 : fg_counter_inc, FASTM_B2W_FRAMES[3:0], csr_mindrv, proc_vin[3:2]}
-                        ) : {proc_bi[15:12], STAGE_MONO, fg_counter_inc, FASTM_W2B_FRAMES[3:0], csr_mindrv, proc_vin[3:2]};
-                    end
-                end
-                else begin
-                    // No change - manage cooldown and counter decay
-                    proc_output = `NO_DRIVE;
-                    if (fg_frames != 0) begin
-                        // Cooldown active, decrement
-                        proc_bo = {proc_bi[15:12], STAGE_DONE, fg_counter, fg_frames_dec, proc_bi[3:0]};
-                    end
-                    else if (fg_counter != 0) begin
-                        // Cooldown expired, decrement counter and reset cooldown
-                        proc_bo = {proc_bi[15:12], STAGE_DONE, fg_counter_dec, FASTG_VIDEO_COOLDOWN, proc_bi[3:0]};
-                    end
-                    else begin
-                        // Fully idle
-                        proc_bo = proc_bi;
-                    end
+                    proc_bo = {proc_bi[15:12], phys_position, proc_bi[5:2], phys_target};
                 end
             end
         end
@@ -644,7 +721,7 @@ module pixel_processing(
             `SETMODE_MANUAL_LUT_BLUE_NOISE:
                 proc_bo = {MODE_MANUAL_LUT_BLUE_NOISE, 4'd0, 6'd0, 4'd15};
             `SETMODE_FAST_MONO_NO_DITHER:
-                proc_bo = `INIT_FAST_MONO_ND;
+                proc_bo = `INIT_FAST_GREY;
             `SETMODE_FAST_MONO_BAYER:
                 proc_bo = `INIT_FAST_MONO_BD;
             `SETMODE_FAST_MONO_BLUE_NOISE:
